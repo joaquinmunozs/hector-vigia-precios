@@ -1,0 +1,31 @@
+# ATENCIÓN: este repositorio es PÚBLICO.
+# Nada de lo que esté acá abajo debe subirse jamás.
+
+# Credenciales. El token de Telegram vive en .env localmente y en los
+# "Secrets" de GitHub Actions para la nube — NUNCA en el repo.
+.env
+.env.*
+!.env.ejemplo
+*.token
+config.json
+credenciales*.json
+
+# La base de precios. No va al repo a propósito: git no deduplica binarios
+# que cambian en cada corrida, así que commitearla 6 veces al día haría
+# crecer el historial sin freno. Persiste como "artifact" de GitHub Actions
+# (ver .github/workflows/hector.yml), que en repos públicos es gratis e
+# ilimitado.
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Basura del sistema
+.DS_Store
+Thumbs.db

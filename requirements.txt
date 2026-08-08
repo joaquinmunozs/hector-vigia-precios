@@ -1,0 +1,5 @@
+# curl_cffi imita el saludo TLS de Chrome. Sin esto, adidas.cl responde 403 y
+# Falabella no se puede leer: son cientos de miles de fichas que se perderían
+# por no instalar una librería. PyPI publica ruedas precompiladas para Linux,
+# así que en el runner instala sin compilar nada.
+curl_cffi>=0.7
