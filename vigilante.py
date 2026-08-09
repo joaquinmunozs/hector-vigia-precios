@@ -207,7 +207,10 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
             # producto agotado no se puede comprar, así que su caída de precio
             # no es una oportunidad. El precio se guarda igual para el
             # historial, y vuelve a evaluarse cuando reponga stock.
-            det = (baseprecios.evaluar(con, url, precio)
+            # nombre y tienda: hacen falta para clasificar en Electrónicos u
+            # Hogar, que es lo que habilita el piso del 35%.
+            det = (baseprecios.evaluar(con, url, precio,
+                                       nombre=d["nombre"], tienda=tienda)
                    if d.get("hay_stock", True) else None)
             baseprecios.guardar(con, tienda, url, d["nombre"], precio)
             if not baseprecios._base_de(con, url):

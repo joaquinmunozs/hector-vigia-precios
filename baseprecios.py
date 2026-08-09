@@ -26,14 +26,22 @@ referencia quedó baja. Con la mediana de semanas de historial eso se arregla
 solo. Va espaciado a propósito: una referencia que se actualiza muy seguido se
 "acostumbra" a un precio bajo y deja de verlo como caída.
 
-DOS NIVELES DE HALLAZGO — y NADA fuera de ellos
+TRES NIVELES DE HALLAZGO — y NADA fuera de ellos
 ------------------------------------------------------------------------------
   caída 70% a 99%   -> ERROR DE PRECIO (el retail se equivocó)
   caída 50% a 70%   -> OFERTA REAL     (descuento de verdad, medido por
                                         nosotros, no el "precio referencia"
                                         inflado que publica la tienda)
-  caída bajo 50%    -> NO SE AVISA. Un "-30%" es ruido: llena el canal de
-                       nada y la gente lo silencia. Solo estos dos rangos.
+  caída 35% a 50%   -> SOLO SI ES DE CATEGORÍA (electrónicos u hogar). Es el
+                       piso rebajado que alimenta esos dos tópicos, agregado
+                       el 8-ago-2026. Ver `categorias.py`.
+  caída bajo 35%    -> NO SE AVISA NUNCA.
+
+Y el piso del 35% NO aplica a todo: un -40% en unas zapatillas o en un libro
+sigue sin avisarse. Solo baja para lo que `categorias.clasificar` reconoce
+como electrónica u hogar, porque son los dos tópicos que lo piden. Sin esa
+restricción el canal se llenaría de "-38%" genéricos, que es exactamente
+como se consigue que la gente lo silencie.
 
 Esa distinción es el corazón del producto: la tienda dice "70% dcto" sobre un
 precio de referencia que nunca cobró. Acá el porcentaje se calcula contra lo
@@ -44,17 +52,21 @@ import sqlite3
 import statistics
 import time
 
+import categorias
+
 RUTA = os.environ.get("VIGIA_DB", os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "precios.db"))
 
 UMBRAL_ERROR = 0.70        # 70%+ bajo la referencia = error de precio
-UMBRAL_OFERTA = 0.50       # 50%-70% = oferta real. Nada bajo 50% avisa nunca.
+UMBRAL_OFERTA = 0.50       # 50%-70% = oferta real, para cualquier producto
+UMBRAL_CATEGORIA = 0.35    # 35%-50%: SOLO electrónicos u hogar, ver arriba
 MIN_OBSERVACIONES = 3      # historial mínimo para no depender de la línea base
 VENTANA_REPETIR = 12 * 3600
 TOPE_FALLOS = 2        # fallos seguidos antes de descartar una URL
 
 ERROR = "error"
 OFERTA = "oferta"
+CATEGORIA = "categoria"    # 35%-50%: solo llega a su tópico de categoría
 
 ESQUEMA = """
 CREATE TABLE IF NOT EXISTS precios (
@@ -168,11 +180,15 @@ def _aviso_reciente(con, url, ahora):
     return bool(f and (ahora - f["avisado_en"]) < VENTANA_REPETIR)
 
 
-def evaluar(con, url, precio_actual, ahora=None):
+def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None):
     """Clasifica el precio de hoy. Devuelve el detalle o None.
 
     Llamar SIEMPRE antes de guardar el precio nuevo: si no, el precio de hoy
     entra en su propia referencia y diluye la caída.
+
+    `nombre` y `tienda` son opcionales pero conviene pasarlos: sin ellos no
+    se puede clasificar el producto y el piso se queda en el 50% de siempre,
+    o sea los tópicos de Electrónicos y Hogar no reciben nada entre 35% y 50%.
     """
     ahora = int(ahora or time.time())
     previos = [p for p, _ in historial(con, url)]
@@ -191,7 +207,12 @@ def evaluar(con, url, precio_actual, ahora=None):
         return None
 
     caida = 1 - (precio_actual / referencia)
-    if caida < UMBRAL_OFERTA:
+
+    # El piso depende de si el producto alimenta un tópico de categoría: 35%
+    # para electrónica y hogar, 50% para todo lo demás.
+    categoria = categorias.clasificar(nombre, tienda, precio_actual)
+    piso = UMBRAL_CATEGORIA if categoria else UMBRAL_OFERTA
+    if caida < piso:
         return None
 
     # Con historial, además tiene que ser el más barato jamás visto: si ya
@@ -202,12 +223,20 @@ def evaluar(con, url, precio_actual, ahora=None):
     if _aviso_reciente(con, url, ahora):
         return None
 
+    if caida >= UMBRAL_ERROR:
+        tipo = ERROR
+    elif caida >= UMBRAL_OFERTA:
+        tipo = OFERTA
+    else:
+        tipo = CATEGORIA
+
     return {
         "url": url,
         "precio": precio_actual,
         "referencia": int(referencia),
         "caida": caida,
-        "tipo": ERROR if caida >= UMBRAL_ERROR else OFERTA,
+        "tipo": tipo,
+        "categoria": categoria,
         "con_historial": con_historial,
         "historico": previos[:4],
     }

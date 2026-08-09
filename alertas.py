@@ -16,18 +16,29 @@ El "rank" no es decoración: ordena de un vistazo qué tan grande es el hallazgo
 y es lo que hace que alguien abra el mensaje en vez de ignorarlo. Sale del
 porcentaje de caída, no se asigna a mano.
 
-DOS TÓPICOS, Y SOLO DOS
+CUATRO TÓPICOS, Y UN MENSAJE PUEDE IR A DOS
 ------------------------------------------------------------------------------
-  🚨 Errores de precio  -> caída 70% a 99%
-  🏷️ Ofertas reales     -> caída 50% a 70%
+  🚨 Errores de precio  -> caída 70% a 99%   (cualquier producto)
+  🏷️ Ofertas reales     -> caída 50% a 70%   (cualquier producto)
+  📱 Electrónicos       -> caída 35% a 70%   (solo electrónica)
+  🏠 Hogar              -> caída 35% a 70%   (solo hogar)
 
-Van separados a propósito: quien paga por errores de precio no quiere que le
-llegue una oferta del 55% mezclada, y quien busca ofertas no necesita que le
-suene el teléfono a las 4 AM por un error que dura 20 minutos.
+Los dos primeros van separados a propósito: quien paga por errores de precio
+no quiere que le llegue una oferta del 55% mezclada, y quien busca ofertas no
+necesita que le suene el teléfono a las 4 AM por un error que dura 20 minutos.
 
-Nada bajo 50% se avisa: ese corte lo pone `baseprecios.evaluar` con
-UMBRAL_OFERTA, así que a este archivo NUNCA le llega un hallazgo menor. Las
-etiquetas de abajo empiezan en 50% por lo mismo.
+EL DUPLICADO ES INTENCIONAL (8-ago-2026)
+------------------------------------------------------------------------------
+Un hallazgo de categoría entre 50% y 70% sale DOS VECES: en Ofertas reales y
+en su tópico de categoría. No es un bug ni un descuido — es lo que se pidió:
+quien sigue solo Electrónicos no debería perderse un -60% en un notebook por
+no estar mirando el tópico general, y quien sigue solo Ofertas tampoco.
+
+Sobre el 70% NO se duplica: ahí ya es error de precio y va únicamente al
+tópico de errores. El tope de los tópicos de categoría es 69%.
+
+Nada bajo 35% llega acá, y entre 35% y 50% solo llega si es de categoría:
+ese corte lo pone `baseprecios.evaluar`, no este archivo.
 """
 import json
 import os
@@ -35,17 +46,20 @@ import time
 import urllib.request
 
 import baseprecios
+import categorias
 
 # Rango de caída -> (emoji, etiqueta). El orden importa: se evalúa de mayor a
-# menor y se usa el primero que calce. El piso es 50%: nada menor llega acá.
-#   70%-99% caen en los rangos de ERROR (van al tópico de errores)
-#   50%-70% caen en los de OFERTA       (van al tópico de ofertas)
+# menor y se usa el primero que calce.
+#   70%-99% caen en los rangos de ERROR     (van al tópico de errores)
+#   50%-70% caen en los de OFERTA           (ofertas + su categoría si tiene)
+#   35%-50% caen en el de CATEGORIA         (solo su tópico de categoría)
 RANGOS = (
     (0.90, "🔥", "SRank"),      # 90-99%: el error grande, el que vuela
     (0.80, "🅰️", "ARank"),
     (0.70, "🅱️", "BRank"),      # 70-80%: error de precio más leve
     (0.60, "🏷️", "Oferta+"),    # 60-70%: oferta muy fuerte
-    (0.50, "🏷️", "Oferta"),     # 50-60%: el piso, oferta real
+    (0.50, "🏷️", "Oferta"),     # 50-60%: el piso general, oferta real
+    (0.35, "📉", "Rebaja"),     # 35-50%: solo en Electrónicos u Hogar
 )
 
 
@@ -57,7 +71,40 @@ def _rango(caida):
     for minimo, emoji, etiqueta in RANGOS:
         if caida >= minimo:
             return emoji, etiqueta
-    return "🏷️", "Oferta"
+    return "📉", "Rebaja"
+
+
+# Categoría -> variable de entorno con el id de su tópico.
+TOPICO_DE_CATEGORIA = {
+    categorias.ELECTRONICOS: "VIGIA_TOPICO_ELECTRONICOS",
+    categorias.HOGAR: "VIGIA_TOPICO_HOGAR",
+}
+
+
+def destinos(det):
+    """A qué tópicos va este hallazgo. Puede ser más de uno — ver el duplicado.
+
+    Devuelve una lista de ids de tópico (los que estén configurados). Si
+    ninguno lo está, devuelve [None], que manda el mensaje al hilo general
+    del grupo en vez de perderlo.
+    """
+    ids = []
+
+    if det["tipo"] == baseprecios.ERROR:
+        # Sobre 70% es error de precio y va SOLO ahí: no se duplica a la
+        # categoría, porque el tope de esos tópicos es 69%.
+        ids.append(os.environ.get("VIGIA_TOPICO_ERRORES"))
+    else:
+        if det["tipo"] == baseprecios.OFERTA:
+            ids.append(os.environ.get("VIGIA_TOPICO_OFERTAS"))
+        # El duplicado: 50%-70% de categoría sale también acá. Y 35%-50%
+        # de categoría sale ÚNICAMENTE acá.
+        var = TOPICO_DE_CATEGORIA.get(det.get("categoria"))
+        if var:
+            ids.append(os.environ.get(var))
+
+    ids = [i for i in ids if i]
+    return ids or [None]
 
 
 def _escapar(t):
@@ -136,19 +183,25 @@ def _enviar(texto, topico_id=None):
 
 
 def enviar_hallazgos(con, hallazgos):
-    """Manda cada hallazgo a su tópico y lo registra para no repetirlo."""
-    topico_error = os.environ.get("VIGIA_TOPICO_ERRORES")
-    topico_oferta = os.environ.get("VIGIA_TOPICO_OFERTAS")
+    """Manda cada hallazgo a sus tópicos y lo registra para no repetirlo.
 
+    Un hallazgo puede ir a DOS tópicos (ver `destinos`), pero se anota UNA
+    sola vez: la anotación existe para no volver a avisar el mismo producto
+    dentro de VENTANA_REPETIR, y eso es por producto, no por tópico.
+    """
     enviados = 0
     # Los más grandes primero: si hay muchos, los que importan salen antes.
     for det in sorted(hallazgos, key=lambda d: -d["caida"]):
-        destino = topico_error if det["tipo"] == baseprecios.ERROR else topico_oferta
-        if _enviar(armar_texto(det, det.get("tienda", "")), destino):
+        texto = armar_texto(det, det.get("tienda", ""))
+        llego = False
+        for topico in destinos(det):
+            if _enviar(texto, topico):
+                llego = True
+                enviados += 1
+                # Telegram tumba al bot si se le mandan más de ~20 mensajes
+                # por minuto al mismo chat.
+                time.sleep(3.5)
+        if llego:
             baseprecios.anotar_alerta(con, det)
-            enviados += 1
-            # Telegram tumba al bot si se le mandan más de ~20 mensajes por
-            # minuto al mismo chat.
-            time.sleep(3.5)
     con.commit()
     return enviados

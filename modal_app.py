@@ -42,6 +42,7 @@ imagen = (
     .add_local_file("adaptadores.py", "/root/adaptadores.py")
     .add_local_file("alertas.py", "/root/alertas.py")
     .add_local_file("caliente.py", "/root/caliente.py")
+    .add_local_file("categorias.py", "/root/categorias.py")
     .add_local_file("vigilante.py", "/root/vigilante.py")
     .add_local_file("baseprecios.py", "/root/baseprecios.py")
     .add_local_file("descubrir.py", "/root/descubrir.py")
@@ -54,7 +55,10 @@ volumen = modal.Volume.from_name("vigia-precios-db", create_if_missing=True)
 RUTA_DB = "/datos/precios.db"
 
 # `vigia-env` trae TODO lo de Telegram: el token de Héctor (@HectorRat_bot),
-# el chat del grupo "Rat.IA" y los dos tópicos.
+# el chat del grupo "Rat.IA" y los CUATRO tópicos (errores, ofertas,
+# electrónicos, hogar). Si faltan los dos últimos en el secreto, los avisos
+# de categoría se van al hilo general del grupo en vez de perderse — pero
+# hay que agregarlos igual, si no los tópicos nuevos quedan vacíos.
 #
 # Antes esto tomaba el token prestado de `steve-env`. Ya no: Héctor es su
 # propio bot, y compartir el token de Steve significaba que un problema en

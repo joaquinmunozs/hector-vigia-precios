@@ -298,7 +298,11 @@ def barrida(con, avisar=True, limite=None):
             # forma más rápida de que un suscriptor silencie el canal. El
             # precio SÍ se guarda: sirve para el historial, y cuando el
             # producto vuelva a tener stock se evalúa con las reglas normales.
-            det = (baseprecios.evaluar(con, url, precio)
+            # El nombre y la tienda van SIEMPRE: sin ellos no se puede
+            # clasificar el producto y los tópicos de Electrónicos y Hogar
+            # se quedan sin nada entre 35% y 50%.
+            det = (baseprecios.evaluar(con, url, precio,
+                                       nombre=d["nombre"], tienda=tienda)
                    if d.get("hay_stock", True) else None)
             baseprecios.guardar(con, tienda, url, d["nombre"], precio)
             # Primera lectura del producto: se fija como su referencia inicial.
@@ -327,7 +331,9 @@ def barrida(con, avisar=True, limite=None):
 
     errores = [h for h in hallazgos if h["tipo"] == baseprecios.ERROR]
     ofertas = [h for h in hallazgos if h["tipo"] == baseprecios.OFERTA]
-    print("   errores de precio: %d · ofertas reales: %d" % (len(errores), len(ofertas)))
+    rebajas = [h for h in hallazgos if h["tipo"] == baseprecios.CATEGORIA]
+    print("   errores de precio: %d · ofertas reales: %d · rebajas 35-50%%: %d"
+          % (len(errores), len(ofertas), len(rebajas)))
 
     if hallazgos and avisar:
         n = alertas.enviar_hallazgos(con, hallazgos)

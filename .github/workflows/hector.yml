@@ -1,0 +1,90 @@
+name: Héctor — vigía de precios
+
+# El cron de GitHub NO tiene SLA: retrasos de 5 a 30 min son normales, y en
+# horas de carga alta puede irse a 60 o saltarse una corrida. Para un ciclo de
+# 4 h eso es tolerable, así que no vale la pena montar un disparador externo.
+on:
+  schedule:
+    - cron: "0 */4 * * *"
+  workflow_dispatch:        # para poder correrlo a mano desde la web
+
+# Si el cron se atrasa y dispara una corrida nueva mientras la anterior sigue
+# escribiendo, la nueva ESPERA en la cola.
+#
+# `cancel-in-progress: false` es deliberado y no se debe cambiar: con `true`,
+# GitHub mataría el proceso anterior a mitad de escritura, que es exactamente
+# el tipo de corte abrupto que corrompió la base SQLite en Modal el 7-ago-2026
+# ("database disk image is malformed").
+concurrency:
+  group: hector-barrida
+  cancel-in-progress: false
+
+jobs:
+  barrer:
+    runs-on: ubuntu-latest
+    # 6 h es el tope duro de GitHub. `correr.py` se autolimita a ~3.4 h para
+    # el vigilante, así que hay margen de sobra para cerrar y subir el estado.
+    timeout-minutes: 350
+
+    steps:
+      - name: Traer el código
+        uses: actions/checkout@v4
+
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      # La base de precios NO vive en el repo (git no deduplica binarios que
+      # cambian 6 veces al día). Persiste como artifact, que en repositorios
+      # PÚBLICOS es gratis e ilimitado.
+      #
+      # `dawidd6/action-download-artifact` puede pedir "el más reciente de este
+      # workflow", que es justo lo que se necesita — la acción oficial de
+      # GitHub solo sabe descargar artifacts de la MISMA corrida.
+      - name: Recuperar la base de la corrida anterior
+        uses: dawidd6/action-download-artifact@v6
+        continue-on-error: true      # la primera corrida no tiene nada que bajar
+        with:
+          name: precios-db
+          workflow: hector.yml
+          workflow_conclusion: ""    # sirve incluso si la corrida anterior falló
+          if_no_artifact_found: warn
+
+      - name: ¿Qué base tenemos?
+        run: |
+          if [ -f precios.db ]; then
+            echo "base recuperada: $(du -h precios.db | cut -f1)"
+          else
+            echo "sin base previa — esta corrida va a descubrir el catálogo desde cero"
+          fi
+
+      # Los cuatro tópicos van acá. Si faltan ELECTRONICOS y HOGAR, esos dos
+      # tópicos del canal quedan vacíos para siempre y nadie se entera: los
+      # avisos de categoría caen al hilo general del grupo, que parece que
+      # funciona. Hay que crear los cuatro secretos en el repo.
+      - name: Correr Héctor
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          VIGIA_CHAT_ID: ${{ secrets.VIGIA_CHAT_ID }}
+          VIGIA_TOPICO_ERRORES: ${{ secrets.VIGIA_TOPICO_ERRORES }}
+          VIGIA_TOPICO_OFERTAS: ${{ secrets.VIGIA_TOPICO_OFERTAS }}
+          VIGIA_TOPICO_ELECTRONICOS: ${{ secrets.VIGIA_TOPICO_ELECTRONICOS }}
+          VIGIA_TOPICO_HOGAR: ${{ secrets.VIGIA_TOPICO_HOGAR }}
+        run: python -u correr.py
+
+      # `if: always()` es clave: si la barrida se cae a la mitad, igual hay que
+      # guardar lo que sí alcanzó a leer. Sin esto, un error al final borraría
+      # el historial de toda la corrida.
+      - name: Guardar la base para la próxima corrida
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: precios-db
+          path: precios.db
+          retention-days: 3        # solo se usa el más reciente; 3 días es margen
+          if-no-files-found: warn
+          overwrite: true
