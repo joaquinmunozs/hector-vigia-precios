@@ -118,14 +118,20 @@ def descubrir_productos(con, niveles=("limpia", "media"), tope_tienda=100000):
 
 # ──────────────────────────────── barrida ───────────────────────────────────
 # Cuántos productos entran en UNA barrida. Con Falabella (1,5M) y Ripley (1,2M)
-# el catálogo son ~3 millones, y a la velocidad medida eso serían ~28 h por
-# pasada contra un cron de 4 h: se cortaría siempre en el mismo punto y media
-# tienda no se revisaría NUNCA.
+# el catálogo son ~3 millones. A los 14 productos/segundo medidos en vivo (ver
+# arriba), el tope tiene que caber en el cron de 4 h con margen: 250.000 ya se
+# pasaba (250.000/14 ≈ 4,96 h, MÁS que el propio cron). 150.000/14 ≈ 2,98 h,
+# deja ~1 h de margen si alguna tienda responde más lento ese día.
+#
+# No hay dato de "popularidad" o "más vendido": el scraper solo trae nombre y
+# precio (ver `extractor.py`), así que no hay cómo priorizar por eso sin
+# scrapear campos nuevos. El precio ya es el mejor proxy que existe — un
+# error en algo caro es lo que de verdad vale la suscripción.
 #
 # El tope solo NO basta, porque deja fuera para siempre a lo que quede bajo el
 # corte. Por eso va con rotación (ver `_objetivos`): los caros se revisan en
 # cada pasada y el resto va rotando, así nada queda sin mirar indefinidamente.
-TOPE_BARRIDA = 250_000
+TOPE_BARRIDA = 150_000
 
 # De ese tope, qué parte se reserva a los más caros (el resto rota). Un error
 # en un iPhone vale muchísimo más que uno en un paño de cocina, así que los

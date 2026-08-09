@@ -59,7 +59,7 @@ HOGAR = "hogar"
 # Bajo esto no se clasifica en ningún tópico de categoría, por mucho que
 # calce. Los tópicos de categoría bajan el piso al 35% de descuento, así que
 # sin un piso de precio se llenarían de rebajas de tres lucas.
-PRECIO_MINIMO = 15_000
+PRECIO_MINIMO = 100_000
 
 # Se evalúa PRIMERO y descarta. Son cosas que calzan con los patrones de
 # abajo pero no son el producto: accesorios baratos, repuestos, consumibles.

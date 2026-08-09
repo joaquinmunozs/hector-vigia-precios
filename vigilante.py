@@ -11,6 +11,33 @@ CÓMO SE DIFERENCIA DE LA BARRIDA
 una y otra vez, sin parar. Es la diferencia entre revisar todo el catálogo de
 vez en cuando y tener a alguien mirando los productos importantes todo el rato.
 
+DOS SUB-NIVELES DENTRO DEL MISMO PRESUPUESTO (9-ago-2026)
+------------------------------------------------------------------------------
+"Errores de precio" y "ofertas" no tienen el mismo plazo de negocio: un error
+(caída ≥70%) es el pilar del negocio y tiene que avisarse en segundos: una
+oferta (35%-70%) alcanza con avisarse dentro de los 10 minutos. Meterlos en
+una sola lista con un solo ritmo desperdicia presupuesto: o se trata a las
+ofertas con la urgencia de un error (no cabe, son muchas más), o se trata a
+los errores con la paciencia de una oferta (se pierde el pilar del negocio).
+
+La solución no es agregar MÁS peticiones — eso es justo lo que puede
+bloquearnos — es **repartir el mismo presupuesto ya medido como seguro**
+(`RITMO_SEGURO`) en dos partes:
+
+  🔥 FIJA      ~70% del cupo · la lista caliente de `caliente.py` (imán +
+               precio) · se revisa ENTERA cada vuelta (~7 s) → detección
+               de errores en segundos, siempre.
+  🔁 ROTATIVA  ~30% del cupo · el resto del catálogo con precio conocido,
+               ordenado por precio (los más caros primero, igual que la
+               fija) · cada vuelta avanza una ventana, así que la lista
+               COMPLETA queda cubierta dentro de `VENTANA_OFERTAS_SEG`
+               (10 min) → detección de ofertas en minutos, no en horas.
+
+El truco es el mismo `_con_rotacion` que ya usa `vigia.py` para la barrida
+completa, aplicado a una escala de segundos en vez de horas: los caros fijos
+siempre se miran, la cola rota, y el tamaño de la cola se calcula para que
+la vuelta completa quepa en la ventana de 10 minutos — nunca al revés.
+
 EL PRESUPUESTO DE PETICIONES
 ------------------------------------------------------------------------------
 El límite no es nuestra máquina: es no incomodar a las tiendas. Los ritmos
@@ -71,10 +98,22 @@ RITMO_SEGURO = {
     "_por_defecto": 5.0,
 }
 
-# Cuántos segundos puede tardar, como máximo, en dar una vuelta completa. Es
-# el número que de verdad define el producto: si la vuelta demora 7 s, un
-# precio que se cae se detecta a los 7 s como peor caso.
+# Cuántos segundos puede tardar, como máximo, en dar una vuelta de la lista
+# FIJA. Es el número que de verdad define el pilar del negocio: si la vuelta
+# demora 7 s, un ERROR de precio se detecta a los 7 s como peor caso — bajo
+# el margen de 10 s pedido.
 VUELTA_OBJETIVO = 7.0
+
+# Qué fracción del cupo de cada tienda va a la lista FIJA (errores) vs. a la
+# ROTATIVA (ofertas). 70/30: el pilar del negocio se queda con la mayoría,
+# pero el 30% que rota alcanza de sobra para la ventana de 10 min — ver la
+# cuenta en `cargar_lista`.
+PROPORCION_FIJA = 0.7
+
+# Tope de tiempo para que la lista ROTATIVA dé una vuelta completa. No es una
+# meta que se persiga con más peticiones: el tamaño de la lista se recorta
+# para que quepa en esta ventana con el cupo ya asignado (ver `cargar_lista`).
+VENTANA_OFERTAS_SEG = 600.0   # 10 minutos
 
 PAUSA_ENTRE_VUELTAS = 0.0      # sin respiro: la vuelta ya está limitada por ritmo
 
@@ -114,7 +153,11 @@ def capacidad_total(vuelta=VUELTA_OBJETIVO, tiendas=None):
 
 
 def cargar_lista(con, vuelta=VUELTA_OBJETIVO):
-    """Los productos calientes, con el cupo de cada tienda según su velocidad."""
+    """El plan de vigilancia de cada tienda: cuota FIJA (errores) + ROTATIVA
+    (ofertas), repartiendo el mismo cupo ya medido como seguro — nunca de más.
+
+    Devuelve {tienda: {"fija": [...], "rotativa": [...], "cupo_rot": N}}.
+    """
     filas = con.execute("""
         SELECT tienda, url, nombre, MAX(precio) AS precio
         FROM precios
@@ -128,19 +171,76 @@ def cargar_lista(con, vuelta=VUELTA_OBJETIVO):
         [(f["tienda"], f["url"], f["nombre"], f["precio"]) for f in filas],
         tope=100_000)
 
-    por_tienda = {}
+    fija_por_tienda, fija_urls = {}, set()
     for t, u, n, p in elegidos:
-        lista = por_tienda.setdefault(t, [])
-        if len(lista) < cupo(t, vuelta):
+        cupo_fijo = max(1, int(cupo(t, vuelta) * PROPORCION_FIJA))
+        lista = fija_por_tienda.setdefault(t, [])
+        if len(lista) < cupo_fijo:
             lista.append((u, n, p))
-    return por_tienda
+            fija_urls.add(u)
+
+    # Candidatas a "ofertas": el resto del catálogo con precio conocido,
+    # ordenado por precio (los más caros primero — mismo criterio que la
+    # fija), sin los que ya están fijos. No hace falta un piso de precio: el
+    # orden y el tope ya priorizan solos lo que vale la pena vigilar.
+    resto_por_tienda = {}
+    for f in filas:
+        if f["url"] in fija_urls:
+            continue
+        resto_por_tienda.setdefault(f["tienda"], []).append(
+            (f["url"], f["nombre"], f["precio"] or 0))
+
+    plan = {}
+    for t in set(fija_por_tienda) | set(resto_por_tienda):
+        cupo_total = cupo(t, vuelta)
+        cupo_fijo = max(1, int(cupo_total * PROPORCION_FIJA))
+        cupo_rot = max(0, cupo_total - cupo_fijo)
+
+        # Cuántas vueltas entran en la ventana de 10 min, y por lo tanto
+        # cuántas candidatas puede cubrir la rotación sin pasarse del cupo
+        # ya asignado — la cuenta que hace que "10 minutos" sea una
+        # consecuencia del presupuesto, no una promesa sin respaldo.
+        vueltas_en_ventana = max(1, int(VENTANA_OFERTAS_SEG / vuelta))
+        tope_rotativa = cupo_rot * vueltas_en_ventana
+
+        candidatas = sorted(resto_por_tienda.get(t, []), key=lambda x: -x[2])
+        plan[t] = {
+            "fija": fija_por_tienda.get(t, []),
+            "rotativa": candidatas[:tope_rotativa],
+            "cupo_rot": cupo_rot,
+        }
+    return plan
 
 
-def _vigilar_tienda(tienda, productos, salida, parar):
-    """Recorre en bucle los productos de UNA tienda, a su ritmo seguro."""
+def _ventana_rotativa(rotativa, desde, cupo_rot):
+    """La tajada de la lista rotativa que le toca a ESTA vuelta, dando la
+    vuelta al final para no dejar nunca la cola sin cubrir. Mismo truco que
+    `_con_rotacion` en vigia.py, a otra escala de tiempo."""
+    if not rotativa or cupo_rot <= 0:
+        return [], desde
+    if desde + cupo_rot <= len(rotativa):
+        ventana = rotativa[desde:desde + cupo_rot]
+    else:
+        ventana = rotativa[desde:] + rotativa[:(desde + cupo_rot) - len(rotativa)]
+    return ventana, (desde + cupo_rot) % len(rotativa)
+
+
+def _vigilar_tienda(tienda, plan, salida, parar):
+    """Recorre en bucle los productos de UNA tienda, a su ritmo seguro.
+
+    Cada vuelta: TODA la lista fija (errores, siempre) + una ventana de la
+    rotativa (ofertas, una tajada distinta cada vez). El ritmo por producto
+    es el mismo para ambas — lo que cambia es cuánto de cada una entra en el
+    cupo, no la velocidad a la que se lee.
+    """
     intervalo = 1.0 / _ritmo(tienda)
+    fija = plan["fija"]
+    rotativa = plan["rotativa"]
+    cupo_rot = plan["cupo_rot"]
+    desde = 0
     while not parar.is_set():
-        for url, _nombre, _precio in productos:
+        ventana, desde = _ventana_rotativa(rotativa, desde, cupo_rot)
+        for url, _nombre, _precio in fija + ventana:
             if parar.is_set():
                 return
             t0 = time.time()
@@ -158,30 +258,41 @@ def _vigilar_tienda(tienda, productos, salida, parar):
 
 
 def correr(con, avisar=True, ciclos=None, segundos_max=None):
-    por_tienda = cargar_lista(con)
-    if not por_tienda:
+    plan = cargar_lista(con)
+    if not plan:
         print("Lista caliente vacía. Corre primero una barrida normal para\n"
               "que haya precios conocidos:  python vigia.py --limite 2000")
         return 0
 
-    total = sum(len(v) for v in por_tienda.values())
-    print("🔥 Lista caliente: %d productos de %d tiendas\n" % (total, len(por_tienda)))
-    for t, ps in sorted(por_tienda.items(), key=lambda x: -len(x[1])):
-        vuelta = len(ps) / _ritmo(t)
-        print("   %-18s %4d productos · %.1f req/s · vuelta cada %.0f seg"
-              % (t, len(ps), _ritmo(t), vuelta))
+    total_fija = sum(len(p["fija"]) for p in plan.values())
+    total_rot = sum(len(p["rotativa"]) for p in plan.values())
+    print("🔥 Errores: %d productos fijos · 🔁 Ofertas: %d en rotación · %d tiendas\n"
+          % (total_fija, total_rot, len(plan)))
+    for t, p in sorted(plan.items(), key=lambda x: -len(x[1]["fija"])):
+        vuelta = (len(p["fija"]) + p["cupo_rot"]) / _ritmo(t)
+        vueltas_rot = len(p["rotativa"]) / max(1, p["cupo_rot"])
+        print("   %-18s %4d fijos + %4d rotativos (de %5d) · %.1f req/s · "
+              "vuelta ~%.0f seg · ofertas completas cada ~%.0f min"
+              % (t, len(p["fija"]), p["cupo_rot"], len(p["rotativa"]), _ritmo(t),
+                 vuelta, vueltas_rot * vuelta / 60))
 
-    peor = max(len(ps) / _ritmo(t) for t, ps in por_tienda.items())
-    print("\n   → detección estimada: hasta %.0f segundos\n" % peor)
+    peor_error = max((len(p["fija"]) + p["cupo_rot"]) / _ritmo(t) for t, p in plan.items())
+    print("\n   → errores: detección hasta %.0f segundos" % peor_error)
+    print("   → ofertas fuera de la lista de errores: hasta %.0f min\n"
+          % (VENTANA_OFERTAS_SEG / 60))
 
     salida = queue.Queue()
     parar = threading.Event()
     hilos = [threading.Thread(target=_vigilar_tienda,
-                              args=(t, ps, salida, parar), daemon=True)
-             for t, ps in por_tienda.items()]
+                              args=(t, p, salida, parar), daemon=True)
+             for t, p in plan.items()]
     for h in hilos:
         h.start()
 
+    # Peticiones por vuelta (fija + ventana rotativa), sumadas entre tiendas.
+    # Solo se usa para `--ciclos` en las pruebas — el corte real en
+    # producción es `segundos_max`, no un conteo de peticiones.
+    total = sum(len(p["fija"]) + p["cupo_rot"] for p in plan.values())
     leidos, hallazgos, inicio = 0, 0, time.time()
     ultimo_precio = {}
     try:

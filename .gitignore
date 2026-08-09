@@ -29,3 +29,6 @@ venv/
 # Basura del sistema
 .DS_Store
 Thumbs.db
+
+# Config local de Claude Code (permisos, preferencias de esta máquina).
+.claude/settings.local.json
