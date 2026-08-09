@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Vigilancia continua de la lista caliente. Detección en segundos.
+"""Vigilancia continua de la lista caliente. Detección en menos de un minuto.
 
     python vigilante.py                # corre hasta que lo cortes
     python vigilante.py --ciclos 3     # 3 vueltas y termina (para probar)
@@ -7,26 +7,28 @@
 
 CÓMO SE DIFERENCIA DE LA BARRIDA
 ------------------------------------------------------------------------------
-`vigia.py` recorre 250.000 productos una vez cada 4 horas. Este recorre ~1.500
-una y otra vez, sin parar. Es la diferencia entre revisar todo el catálogo de
-vez en cuando y tener a alguien mirando los productos importantes todo el rato.
+`vigia.py` recorre 250.000 productos una vez cada 4 horas. Este recorre miles
+de productos una y otra vez, sin parar. Es la diferencia entre revisar todo
+el catálogo de vez en cuando y tener a alguien mirando los productos
+importantes todo el rato.
 
 DOS SUB-NIVELES DENTRO DEL MISMO PRESUPUESTO (9-ago-2026)
 ------------------------------------------------------------------------------
 "Errores de precio" y "ofertas" no tienen el mismo plazo de negocio: un error
-(caída ≥70%) es el pilar del negocio y tiene que avisarse en segundos: una
-oferta (35%-70%) alcanza con avisarse dentro de los 10 minutos. Meterlos en
-una sola lista con un solo ritmo desperdicia presupuesto: o se trata a las
-ofertas con la urgencia de un error (no cabe, son muchas más), o se trata a
-los errores con la paciencia de una oferta (se pierde el pilar del negocio).
+(caída ≥70%) es el pilar del negocio y tiene que avisarse en menos de un
+minuto; una oferta (35%-70%) alcanza con avisarse dentro de los 10 minutos.
+Meterlos en una sola lista con un solo ritmo desperdicia presupuesto: o se
+trata a las ofertas con la urgencia de un error (no cabe, son muchas más), o
+se trata a los errores con la paciencia de una oferta (se pierde el pilar
+del negocio).
 
 La solución no es agregar MÁS peticiones — eso es justo lo que puede
 bloquearnos — es **repartir el mismo presupuesto ya medido como seguro**
 (`RITMO_SEGURO`) en dos partes:
 
   🔥 FIJA      ~70% del cupo · la lista caliente de `caliente.py` (imán +
-               precio) · se revisa ENTERA cada vuelta (~7 s) → detección
-               de errores en segundos, siempre.
+               precio) · se revisa ENTERA cada vuelta (`VUELTA_OBJETIVO`,
+               59 s) → detección de errores en menos de un minuto, siempre.
   🔁 ROTATIVA  ~30% del cupo · el resto del catálogo con precio conocido,
                ordenado por precio (los más caros primero, igual que la
                fija) · cada vuelta avanza una ventana, así que la lista
@@ -44,9 +46,9 @@ El límite no es nuestra máquina: es no incomodar a las tiendas. Los ritmos
 seguros se midieron en vivo con `medir_limites.py` (7-ago-2026) y están en
 RITMO_SEGURO. Se respeta uno por tienda, en paralelo entre tiendas.
 
-Con ~1.500 productos repartidos y esos ritmos, una vuelta completa toma unos
-pocos segundos. O sea: si un precio se cae, se detecta en la siguiente vuelta,
-no en la siguiente barrida.
+Con miles de productos repartidos y esos ritmos, una vuelta completa toma
+menos de un minuto. O sea: si un precio se cae, se detecta en la siguiente
+vuelta, no en la siguiente barrida.
 
 POR QUÉ NO GUARDA TODAS LAS LECTURAS
 ------------------------------------------------------------------------------
@@ -99,10 +101,17 @@ RITMO_SEGURO = {
 }
 
 # Cuántos segundos puede tardar, como máximo, en dar una vuelta de la lista
-# FIJA. Es el número que de verdad define el pilar del negocio: si la vuelta
-# demora 7 s, un ERROR de precio se detecta a los 7 s como peor caso — bajo
-# el margen de 10 s pedido.
-VUELTA_OBJETIVO = 7.0
+# FIJA. Es el número que define el pilar del negocio: si la vuelta demora
+# T segundos, un ERROR de precio se detecta a los T segundos como peor caso.
+#
+# Subido de 7 a 59 el 9-ago-2026, a propósito: no hay evidencia (ni de
+# Chile ni de afuera — se buscó) de que 7s detecte algo que 59s no
+# detectaría igual, y sin ese margen extra el cupo de la lista fija era
+# mucho más chico (~1.500 productos a 7s). A 59s cabe casi 8 veces más
+# catálogo en la misma velocidad segura por tienda — sigue siendo "en
+# menos de un minuto", muy por debajo de cualquier referencia conocida
+# (herramientas como Keepa avisan 15 min a horas después).
+VUELTA_OBJETIVO = 59.0
 
 # Qué fracción del cupo de cada tienda va a la lista FIJA (errores) vs. a la
 # ROTATIVA (ofertas). 70/30: el pilar del negocio se queda con la mayoría,
@@ -138,10 +147,10 @@ def cupo(tienda, vuelta=VUELTA_OBJETIVO):
 
         productos = ritmo_seguro × segundos_de_vuelta
 
-    Falabella a 88 req/s con vuelta de 7 s son 616 productos. Ripley a 5 req/s,
-    solo 35. Por eso no se reparte el cupo en partes iguales: cada tienda
-    aporta según lo rápido que responda, y una tienda lenta no puede arrastrar
-    a las demás.
+    Falabella a 88 req/s con vuelta de 59 s son 5.192 productos. Ripley a
+    5 req/s, solo 295. Por eso no se reparte el cupo en partes iguales: cada
+    tienda aporta según lo rápido que responda, y una tienda lenta no puede
+    arrastrar a las demás.
     """
     return max(1, int(_ritmo(tienda) * vuelta))
 
@@ -295,10 +304,15 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
     for h in hilos:
         h.start()
 
-    # Peticiones por vuelta (fija + ventana rotativa), sumadas entre tiendas.
-    # Solo se usa para `--ciclos` en las pruebas — el corte real en
-    # producción es `segundos_max`, no un conteo de peticiones.
-    total = sum(len(p["fija"]) + p["cupo_rot"] for p in plan.values())
+    # Peticiones REALES por vuelta (fija + ventana rotativa), sumadas entre
+    # tiendas. `cupo_rot` es lo presupuestado, no lo que hay: si la lista
+    # rotativa tiene menos candidatas que el cupo (normal con poco catálogo,
+    # como en una prueba local), la ventana real es más chica — hay que usar
+    # el mínimo, o `--ciclos` nunca corta porque cuenta peticiones que jamás
+    # van a pasar. Solo se usa para `--ciclos` en las pruebas — el corte real
+    # en producción es `segundos_max`, no un conteo de peticiones.
+    total = sum(len(p["fija"]) + min(p["cupo_rot"], len(p["rotativa"]))
+                for p in plan.values())
     leidos, hallazgos, inicio = 0, 0, time.time()
     ultimo_precio = {}
     try:

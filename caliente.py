@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""La lista caliente: pocos productos, vigilados cada pocos segundos.
+"""La lista caliente: pocos miles de productos, vigilados sin parar.
 
 EL PROBLEMA QUE RESUELVE
 ------------------------------------------------------------------------------
@@ -17,8 +17,12 @@ Es como operan los "cook groups" de zapatillas, que detectan un restock en
 120-300 ms: NO vigilan millones de productos, vigilan una lista corta de
 productos calientes a toda velocidad, y el resto ni lo miran.
 
-  🔥 lista caliente  ~1.500 productos · cada ~5 seg  · detección < 10 seg
+  🔥 lista caliente  varios miles     · cada ~59 seg · detección < 1 min
   🐢 barrida normal  250.000          · cada 4 h     · detección < 4 h
+
+(el tamaño real de la lista caliente sale del cupo de peticiones seguras de
+cada tienda — ver `VUELTA_OBJETIVO` y `PROPORCION_FIJA` en vigilante.py, no
+es un número fijo elegido a mano)
 
 Un error en un iPhone de $1.200.000 se agarra en segundos. Un error en un paño
 de cocina de $2.000 se agarra en horas — y está bien, porque nadie hace fila
