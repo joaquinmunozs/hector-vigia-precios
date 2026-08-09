@@ -23,6 +23,7 @@ import gzip
 import re
 import urllib.parse
 import urllib.request
+import urllib.robotparser
 
 TIEMPO_LIMITE = 25
 CABECERAS = {
@@ -260,13 +261,53 @@ def desde_categorias(dominio, tope=120, max_categorias=6):
     return fichas[:tope]
 
 
+_ROBOTS_CACHE = {}
+
+
+def _parser_robots(dominio):
+    """El robots.txt de la tienda, parseado — cacheado por dominio, se pide
+    una sola vez aunque `fichas_de` revise miles de URLs.
+
+    Si no se puede leer (falla la conexión, da 404, etc.) se devuelve un
+    parser vacío, que en la práctica permite todo: sin robots.txt no hay
+    regla que respetar, y no vale la pena bloquear el descubrimiento por
+    esto — el filtro es para respetar un `Disallow` DECLARADO, no para
+    inventar restricciones que la tienda no puso.
+    """
+    if dominio in _ROBOTS_CACHE:
+        return _ROBOTS_CACHE[dominio]
+    rp = urllib.robotparser.RobotFileParser()
+    try:
+        crudo = bajar("https://www.%s/robots.txt" % dominio, tiempo=12)
+        rp.parse(crudo.splitlines())
+    except Exception:                              # noqa: BLE001
+        rp.parse([])                                # vacío = permite todo
+    _ROBOTS_CACHE[dominio] = rp
+    return rp
+
+
+def _permitidas_por_robots(dominio, urls):
+    """Filtra las URLs que el propio robots.txt de la tienda marca como
+    `Disallow` — no leerlas es gratis (ya bajamos el archivo para encontrar
+    el sitemap) y es la diferencia entre "leemos lo que publican para
+    cualquiera" y "entramos donde ellos mismos pidieron que no".
+    """
+    rp = _parser_robots(dominio)
+    excluidas = [u for u in urls if not rp.can_fetch("*", u)]
+    if excluidas:
+        print("  %s: %d ficha(s) excluidas por robots.txt (Disallow)"
+              % (dominio, len(excluidas)))
+    return [u for u in urls if u not in set(excluidas)]
+
+
 def fichas_de(dominio, tope=100000):
     """Todas las URLs de ficha que se puedan hallar, por cualquiera de las dos
-    vías. Devuelve lista sin duplicados."""
+    vías. Devuelve lista sin duplicados, ya filtrada contra `Disallow`."""
     encontradas = desde_sitemap(dominio, tope)
     if not encontradas:
         encontradas = desde_categorias(dominio, tope)
-    return list(dict.fromkeys(encontradas))[:tope]
+    unicas = list(dict.fromkeys(encontradas))[:tope]
+    return _permitidas_por_robots(dominio, unicas)
 
 
 if __name__ == "__main__":

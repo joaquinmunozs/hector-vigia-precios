@@ -39,6 +39,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 import alertas
 import baseprecios
+import depurar_robots
 import vigia
 import vigilante
 
@@ -87,6 +88,17 @@ def main():
             print("fichas nuevas: %d" % n)
         except Exception as ex:                          # noqa: BLE001
             print("descubrimiento falló (la corrida sigue): %s" % str(ex)[:120])
+
+        # Mismo día que el descubrimiento: por si alguna tienda cambió su
+        # robots.txt, o quedó algo de antes de que `descubrir.fichas_de`
+        # empezara a filtrar por Disallow (9-ago-2026).
+        try:
+            revisadas, excluidas = depurar_robots.depurar(con)
+            if excluidas:
+                print("robots.txt: %d ficha(s) sacadas del catálogo (de %d revisadas)"
+                      % (excluidas, revisadas))
+        except Exception as ex:                          # noqa: BLE001
+            print("depuración de robots.txt falló (la corrida sigue): %s" % str(ex)[:120])
 
     def _vigilar():
         # La conexión se abre ACÁ DENTRO, en el hilo que la va a usar.
