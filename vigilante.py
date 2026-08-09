@@ -165,11 +165,17 @@ def cargar_lista(con, vuelta=VUELTA_OBJETIVO):
         GROUP BY url
     """).fetchall()
 
+    # Refuerzo por historial real: tiendas que ya se equivocaron antes suben
+    # en el ranking, no solo las que tienen marca+precio altos. Arranca vacío
+    # (sin alertas todavía, nadie tiene refuerzo) y se corrige solo con cada
+    # error real — ver `baseprecios.tasas_error_por_tienda`.
+    tasas_error = baseprecios.tasas_error_por_tienda(con)
+
     # Se pide un tope alto y después se corta POR TIENDA: así una tienda
     # rápida con muchos productos buenos no le come el cupo a las demás.
     elegidos = caliente.elegir(
         [(f["tienda"], f["url"], f["nombre"], f["precio"]) for f in filas],
-        tope=100_000)
+        tope=100_000, tasas_error=tasas_error)
 
     fija_por_tienda, fija_urls = {}, set()
     for t, u, n, p in elegidos:
@@ -326,6 +332,12 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
             baseprecios.guardar(con, tienda, url, d["nombre"], precio)
             if not baseprecios._base_de(con, url):
                 baseprecios.fijar_base(con, url, precio, "inicial")
+            # Si esta URL tenía un error sin resolver y el precio ya volvió a
+            # su referencia, queda medido cuánto tardó la tienda en
+            # corregirlo — es la única forma real de responder "cuánto dura
+            # un error de precio", y solo el vigilante relee seguido como
+            # para poder medirlo.
+            baseprecios.marcar_si_restablecido(con, url, precio)
             con.commit()
 
             if anterior is not None:

@@ -119,7 +119,13 @@ def _migrar(con):
     la columna `tipo`.
     """
     faltantes = {
-        "alertas": [("tipo", "TEXT NOT NULL DEFAULT 'error'")],
+        "alertas": [
+            ("tipo", "TEXT NOT NULL DEFAULT 'error'"),
+            # NULL = todavía no se sabe si la tienda corrigió el precio.
+            # Se llena sola cuando se vuelve a leer esa URL y el precio ya
+            # recuperó su referencia — ver `marcar_si_restablecido`.
+            ("restablecido_en", "INTEGER"),
+        ],
     }
     for tabla, columnas in faltantes.items():
         try:
@@ -248,6 +254,85 @@ def anotar_alerta(con, det, ahora=None):
         "VALUES (?,?,?,?,?,?)",
         (det["url"], det["tipo"], det["precio"], det["referencia"],
          det["caida"], int(ahora or time.time())))
+
+
+MIN_CATALOGO_PARA_TASA = 500   # bajo esto, un puñado de errores da un % ruidoso
+
+
+def tasas_error_por_tienda(con, ventana_dias=30, ahora=None):
+    """Fracción de productos de cada tienda que tuvo un ERROR de precio real
+    en los últimos `ventana_dias` — la probabilidad empírica de que esa
+    tienda "se quiebre" de nuevo, para reforzar `caliente.puntaje` con datos
+    reales en vez de solo marca+precio.
+
+    Arranca vacío (sin alertas todavía no hay tasa para nadie) y se corrige
+    solo con cada error real que se registre — no hace falta sembrar nada a
+    mano. Se exige un catálogo de al menos `MIN_CATALOGO_PARA_TASA`
+    productos para que la tasa cuente: una tienda de 10 productos con 1
+    error da un "10%" que no significa nada.
+    """
+    desde = int((ahora or time.time()) - ventana_dias * 86400)
+    errores = con.execute("""
+        SELECT p.tienda AS tienda, COUNT(DISTINCT a.url) AS n
+        FROM alertas a JOIN precios p ON p.url = a.url
+        WHERE a.tipo = ? AND a.avisado_en >= ?
+        GROUP BY p.tienda
+    """, (ERROR, desde)).fetchall()
+
+    catalogo = con.execute(
+        "SELECT tienda, COUNT(DISTINCT url) AS n FROM precios GROUP BY tienda"
+    ).fetchall()
+    tam = {r["tienda"]: r["n"] for r in catalogo}
+
+    return {
+        r["tienda"]: r["n"] / tam[r["tienda"]]
+        for r in errores
+        if tam.get(r["tienda"], 0) >= MIN_CATALOGO_PARA_TASA
+    }
+
+
+def marcar_si_restablecido(con, url, precio_actual, ahora=None):
+    """Si esta URL tiene una alerta sin resolver y el precio ya volvió a
+    estar cerca de su referencia de entonces, anota cuánto tardó la tienda
+    en corregirlo. Es la única forma honesta de responder "cuánto dura un
+    error de precio en Chile": medirlo con datos propios, no adivinar.
+
+    "Cerca" es 90% de la referencia — no exige volver EXACTO al precio
+    viejo (que a veces sube o baja un poco al corregirse) para no dejar
+    casos reales sin medir por un detalle de un par de pesos.
+    """
+    ahora = int(ahora or time.time())
+    abierta = con.execute(
+        "SELECT id, referencia FROM alertas "
+        "WHERE url=? AND restablecido_en IS NULL "
+        "ORDER BY avisado_en DESC LIMIT 1", (url,)).fetchone()
+    if not abierta or precio_actual < abierta["referencia"] * 0.9:
+        return None
+    con.execute("UPDATE alertas SET restablecido_en=? WHERE id=?",
+                (ahora, abierta["id"]))
+    con.commit()
+    return ahora
+
+
+def duracion_errores(con, ventana_dias=30, ahora=None):
+    """Cuánto tardaron en corregirse los errores YA RESUELTOS de los
+    últimos `ventana_dias` — mediana y percentil 90, en minutos. `None` si
+    todavía no hay ninguno resuelto (normal al principio: hace falta que el
+    vigilante vuelva a leer la URL después del error para saber que se
+    corrigió, no solo que se avisó)."""
+    desde = int((ahora or time.time()) - ventana_dias * 86400)
+    filas = con.execute(
+        "SELECT avisado_en, restablecido_en FROM alertas "
+        "WHERE tipo=? AND restablecido_en IS NOT NULL AND avisado_en >= ?",
+        (ERROR, desde)).fetchall()
+    if not filas:
+        return None
+    minutos = sorted((f["restablecido_en"] - f["avisado_en"]) / 60 for f in filas)
+    return {
+        "n": len(minutos),
+        "mediana_min": statistics.median(minutos),
+        "p90_min": minutos[int(0.9 * (len(minutos) - 1))],
+    }
 
 
 def recalcular_bases(con, ahora=None):

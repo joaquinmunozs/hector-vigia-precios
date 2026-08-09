@@ -98,15 +98,36 @@ LASTRE = re.compile(
     r"cuento|c[óo]mic|manga|texto\s*escolar|cuaderno)", re.I)
 
 PRECIO_MINIMO = 60_000         # bajo esto, el ahorro no justifica la urgencia
-TOPE_CALIENTE = 1_500          # cuántos productos entran
+
+# OJO: no es el tope real de producción — `vigilante.cargar_lista` llama a
+# `elegir()` con tope=100.000 y después cada tienda se recorta sola por su
+# cupo de peticiones seguras (ver vigilante.py). Esto es solo el default
+# para pruebas sueltas y para el `--tope` de la CLI.
+TOPE_CALIENTE = 1_500
+
+# Cuánto pesa la tasa de error REAL de una tienda (0.0 a ~0.05 en la
+# práctica) frente al puntaje de marca+precio. 20 significa que una tienda
+# con 5% de su catálogo con errores históricos duplica su puntaje — sube de
+# rango, pero no aplasta a un iPhone recién agregado que aún no tiene
+# historial. Tope 3.0 para que una tienda muy chica con 1-2 errores tempranos
+# (aunque ya pasó el piso de `MIN_CATALOGO_PARA_TASA`) no se dispare sola.
+PESO_HISTORIAL = 20.0
+TOPE_BOOST_HISTORIAL = 3.0
 
 
-def puntaje(nombre, precio, tienda=""):
+def puntaje(nombre, precio, tienda="", tasa_error_tienda=0.0):
     """Cuánto merece este producto estar en la lista caliente. Mayor = más.
 
     Primero el portón: si no es un "imán" reconocido, el puntaje es CERO,
     sin importar el precio. Ser caro ya no basta — hay que ser algo que la
     gente de verdad quiera y revenda rápido.
+
+    `tasa_error_tienda` es la probabilidad EMPÍRICA (no una marca ni un
+    precio) de que esa tienda vuelva a tener un error — sale de
+    `baseprecios.tasas_error_por_tienda`. Arranca en 0 para todas las
+    tiendas (sin historial, no hay señal) y se corrige sola con cada error
+    real: la tienda que de verdad se equivoca sube en el ranking aunque sus
+    productos no sean más caros ni más "imán" que los de otra.
     """
     nombre = nombre or ""
     if not precio or precio < PRECIO_MINIMO:
@@ -126,20 +147,26 @@ def puntaje(nombre, precio, tienda=""):
     # mucho más Falabella en el mismo presupuesto de tiempo.
     factor = 1.4 if tienda == "falabella.com" else 1.0
 
-    return p * factor
+    boost = 1.0 + min(tasa_error_tienda * PESO_HISTORIAL, TOPE_BOOST_HISTORIAL)
+
+    return p * factor * boost
 
 
-def elegir(filas, tope=TOPE_CALIENTE):
+def elegir(filas, tope=TOPE_CALIENTE, tasas_error=None):
     """De todo el catálogo con precio conocido, los que entran a la caliente.
 
     `filas` son dicts o tuplas con (tienda, url, nombre, precio).
+    `tasas_error` es el dict de `baseprecios.tasas_error_por_tienda` — si no
+    se pasa, nadie recibe refuerzo por historial (equivalente a que todas las
+    tiendas tengan 0% de errores conocidos todavía).
     """
+    tasas_error = tasas_error or {}
     puntuados = []
     for f in filas:
         tienda, url, nombre, precio = (
             (f["tienda"], f["url"], f["nombre"], f["precio"])
             if isinstance(f, dict) or hasattr(f, "keys") else f)
-        p = puntaje(nombre, precio, tienda)
+        p = puntaje(nombre, precio, tienda, tasas_error.get(tienda, 0.0))
         if p > 0:
             puntuados.append((p, tienda, url, nombre, precio))
 
