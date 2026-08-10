@@ -1,0 +1,7 @@
+# Copiar a .dev.vars (gitignorado) para probar en local con `wrangler dev`.
+# En producción estos mismos van con `wrangler secret put <NOMBRE>`.
+
+FLOW_API_KEY=
+FLOW_SECRET_KEY=
+TELEGRAM_BOT_TOKEN=
+ADMIN_TELEGRAM_CHAT_ID=

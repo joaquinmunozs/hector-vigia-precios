@@ -1,0 +1,11 @@
+# Landing estática de Rat.IA — SIN lógica de servidor, SIN KV, SIN cron.
+# A propósito en su propia carpeta con su propio wrangler.toml: si se
+# desplegara desde cobro/ (donde vive el wrangler.toml del Worker de pagos,
+# con su cron y sus bindings), Wrangler termina subiendo ESE Worker con
+# otro nombre en vez del HTML — ya pasó una vez, ver el historial.
+
+name = "ratia-landing"
+compatibility_date = "2026-08-01"
+
+[assets]
+directory = "."

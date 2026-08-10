@@ -1,0 +1,35 @@
+# Config del Worker de cobro de Rat.IA.
+# Ver README.md para el checklist completo de despliegue.
+
+name = "ratia-cobro"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+# Se crea con: wrangler kv namespace create ratia_kv
+# y el id que devuelva se pega abajo.
+[[kv_namespaces]]
+binding = "RATIA_KV"
+id = "9df3c802bed5422cb3c3ea5cf9c2e7ce"
+
+# Cron de vencidos: una vez al día a las 12:00 UTC (08:00 en Chile
+# continental sin horario de verano — ajustar si hace falta).
+[triggers]
+crons = ["0 12 * * *"]
+
+# No sensibles — van directo en el repo. Los que SÍ importan (API keys,
+# tokens) se suben con `wrangler secret put`, nunca acá.
+[vars]
+FLOW_PLAN_ID_FUNDADOR = "ratia-fundador-2990"
+# El plan de $4.990 se crea recién cuando el contador de altas llegue a 100
+# (aviso automático a ADMIN_TELEGRAM_CHAT_ID — ver kv.js). Hasta entonces
+# esto se queda como placeholder a propósito: no hace falta antes.
+FLOW_PLAN_ID_REGULAR = "PEGAR_PLAN_ID_4990"
+VIGIA_CHAT_ID = "-1004291456596"
+
+# Para que cada pago se registre en la Supabase de Cóndor.ai y Nicolás
+# pueda sumarlo al IVA del F29 (ver src/supabase.js). La anon key SÍ es
+# pública a propósito — lo que la protege es la política RLS de
+# ingresos_ratia (solo puede insertar, con monto > 0). Sacarla del
+# dashboard de Supabase: Project Settings → API.
+SUPABASE_URL = "https://ogmvdthxwcmvqjlxhpsr.supabase.co"
+SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9nbXZkdGh4d2NtdnFqbHhocHNyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE2NDEwMTksImV4cCI6MjA5NzIxNzAxOX0.wo6zSUlMejjYu1hSweZcWEBBdCvBgVNWg3xtLzFTIrI"
