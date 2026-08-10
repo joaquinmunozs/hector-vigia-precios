@@ -25,6 +25,9 @@ jobs:
     # 6 h es el tope duro de GitHub. `correr.py` se autolimita a ~3.4 h para
     # el vigilante, así que hay margen de sobra para cerrar y subir el estado.
     timeout-minutes: 350
+    permissions:
+      contents: read
+      actions: read       # necesario para listar corridas y elegir la anterior
 
     steps:
       - name: Traer el código
@@ -38,20 +41,44 @@ jobs:
       - name: Instalar dependencias
         run: pip install -r requirements.txt
 
+      # BUG real encontrado el 10-ago-2026: `dawidd6/action-download-artifact`
+      # sin `run_id` busca "la corrida más reciente de este workflow" — y esa
+      # corrida más reciente es ESTA MISMA (recién creada, unos segundos
+      # antes). Se encuentra a sí misma, no tiene artifact propio todavía
+      # ("not found: precios-db"), y el catálogo se reinicia desde cero.
+      # Confirmado que pasaba también el 9-ago: no es nuevo, es de siempre.
+      # Esto probablemente explica los pocos avisos de precio: si cada
+      # corrida "descubre" el catálogo otra vez, cada URL es "nueva" y su
+      # precio de referencia se fija en el mismo instante que se lee — nunca
+      # hay una base ANTERIOR real contra la que comparar una caída.
+      #
+      # Arreglo: resolver la corrida anterior a mano (la más reciente que NO
+      # sea `github.run_id`) y pasarle el `run_id` exacto a la acción, para
+      # que no tenga que adivinar.
+      - name: Encontrar la corrida anterior (no esta misma)
+        id: anterior
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUN_ID=$(gh api "repos/${{ github.repository }}/actions/workflows/hector.yml/runs?per_page=10" \
+            --jq "[.workflow_runs[] | select(.id != ${{ github.run_id }})][0].id // \"\"")
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          if [ -n "$RUN_ID" ]; then
+            echo "Corrida anterior: $RUN_ID"
+          else
+            echo "No hay corrida anterior (primera vez que corre este workflow)"
+          fi
+
       # La base de precios NO vive en el repo (git no deduplica binarios que
       # cambian 6 veces al día). Persiste como artifact, que en repositorios
       # PÚBLICOS es gratis e ilimitado.
-      #
-      # `dawidd6/action-download-artifact` puede pedir "el más reciente de este
-      # workflow", que es justo lo que se necesita — la acción oficial de
-      # GitHub solo sabe descargar artifacts de la MISMA corrida.
       - name: Recuperar la base de la corrida anterior
+        if: steps.anterior.outputs.run_id != ''
         uses: dawidd6/action-download-artifact@v6
         continue-on-error: true      # la primera corrida no tiene nada que bajar
         with:
           name: precios-db
-          workflow: hector.yml
-          workflow_conclusion: ""    # sirve incluso si la corrida anterior falló
+          run_id: ${{ steps.anterior.outputs.run_id }}
           if_no_artifact_found: warn
 
       - name: ¿Qué base tenemos?
