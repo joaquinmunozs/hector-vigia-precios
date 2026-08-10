@@ -7,6 +7,11 @@ on:
   schedule:
     - cron: "0 */4 * * *"
   workflow_dispatch:        # para poder correrlo a mano desde la web
+    inputs:
+      solo_descubrir:
+        description: "Solo repoblar el catálogo (sin vigilante ni barrida)"
+        type: boolean
+        default: false
 
 # Si el cron se atrasa y dispara una corrida nueva mientras la anterior sigue
 # escribiendo, la nueva ESPERA en la cola.
@@ -95,6 +100,9 @@ jobs:
       # funciona. Hay que crear los cuatro secretos en el repo.
       - name: Correr Héctor
         env:
+          # Solo lo prende el disparo a mano; el cron nunca lo manda, así que
+          # una corrida programada jamás se salta el vigilante por esto.
+          HECTOR_SOLO_DESCUBRIR: ${{ github.event.inputs.solo_descubrir == 'true' && '1' || '0' }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           VIGIA_CHAT_ID: ${{ secrets.VIGIA_CHAT_ID }}
           VIGIA_TOPICO_ERRORES: ${{ secrets.VIGIA_TOPICO_ERRORES }}

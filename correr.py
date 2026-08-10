@@ -62,6 +62,23 @@ def _es_lunes_temprano(ahora):
     return ahora.weekday() == 0 and ahora.hour < 8
 
 
+# Descubrimiento a pedido, sin esperar al lunes.
+#
+# Por qué existe: el descubrimiento solo corre con el catálogo vacío o los
+# lunes antes de las 08:00 UTC. Si el catálogo se pierde o queda a medias un
+# lunes por la tarde (pasó el 10-ago-2026: quedó en 3 tiendas de 44), no hay
+# forma de repoblarlo hasta el lunes siguiente — una semana vigilando una
+# fracción del retail sin que nada avise.
+#
+# Es SOLO descubrimiento y termina: no lanza el vigilante ni la barrida. Eso
+# es deliberado. Descubrir 44 tiendas y ADEMÁS aguantar el vigilante de 3,4 h
+# se pasaría del tope de 350 min del job y se perdería todo al cortarse. Así
+# la corrida es corta, guarda el catálogo en el artifact, y la siguiente
+# corrida programada ya arranca con todo.
+def _solo_descubrir():
+    return os.environ.get("HECTOR_SOLO_DESCUBRIR", "").strip() == "1"
+
+
 def _toca_recalibrar(ahora):
     """Los días 1 y 15 se refrescan las referencias con el historial real.
 
@@ -83,6 +100,27 @@ def main():
           % (format(e["vigilados"], ",d").replace(",", "."),
              format(e["con_precio"], ",d").replace(",", "."),
              format(e["observaciones"], ",d").replace(",", ".")))
+
+    if _solo_descubrir():
+        print("\nModo SOLO DESCUBRIR (pedido a mano): se repuebla el catálogo\n"
+              "y se cierra. No corre ni el vigilante ni la barrida.\n")
+        n = vigia.descubrir_productos(con)
+        print("fichas nuevas: %d" % n)
+        try:
+            revisadas, excluidas = depurar_robots.depurar(con)
+            if excluidas:
+                print("robots.txt: %d ficha(s) sacadas del catálogo (de %d revisadas)"
+                      % (excluidas, revisadas))
+        except Exception as ex:                          # noqa: BLE001
+            print("depuración de robots.txt falló (el catálogo sí quedó): %s" % str(ex)[:120])
+        print("\nestado final:", baseprecios.estadisticas(con))
+        # Mismo checkpoint que abajo: sin esto el artifact sube una base
+        # "válida" pero sin lo que se acaba de descubrir.
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        con.close()
+        if os.path.exists(baseprecios.RUTA):
+            print("base final: %.1f MB" % (os.path.getsize(baseprecios.RUTA) / 1024 / 1024))
+        return 0
 
     # Catálogo vacío (primera corrida, o artifact perdido): hay que descubrir
     # antes de poder barrer nada.
