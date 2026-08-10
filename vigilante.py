@@ -315,6 +315,7 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
                 for p in plan.values())
     leidos, hallazgos, inicio = 0, 0, time.time()
     ultimo_precio = {}
+    sin_comitear = 0     # cambios desde el último commit — ver más abajo
     try:
         while True:
             try:
@@ -352,7 +353,20 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
             # un error de precio", y solo el vigilante relee seguido como
             # para poder medirlo.
             baseprecios.marcar_si_restablecido(con, url, precio)
-            con.commit()
+
+            # Commit cada 50 CAMBIOS, no en cada uno. Con la lista rotativa
+            # 8 veces más grande desde el 9-ago, casi todo lo que se lee es
+            # "nuevo" en la primera vuelta (nunca visto en `ultimo_precio`
+            # de este proceso) — comitear uno por uno multiplicó las
+            # escrituras a SQLite justo cuando más hilos compiten por el
+            # mismo archivo (la barrida corre en paralelo). Un hallazgo YA
+            # se avisó por Telegram antes de este punto, así que agrupar el
+            # commit no le cuesta nada a la velocidad de aviso — lo único
+            # que se retrasa es cuándo queda confirmado a disco.
+            sin_comitear += 1
+            if sin_comitear >= 50:
+                con.commit()
+                sin_comitear = 0
 
             if anterior is not None:
                 print("  %s %s: %s → %s" % (
@@ -371,8 +385,21 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
                     # mensajes para no pasarse del límite de Telegram, y hacerlo
                     # dentro del bucle congelaría la vigilancia justo cuando más
                     # importa — con un hallazgo recién detectado en la mano.
-                    threading.Thread(target=alertas.enviar_hallazgos,
-                                     args=(con, [det]), daemon=True).start()
+                    #
+                    # OJO: `con` es del hilo de ESTE bucle — sqlite3 prohíbe
+                    # usar una conexión desde un hilo distinto al que la creó
+                    # (falla en silencio dentro de un hilo daemon, sin que
+                    # nadie se entere: exactamente el bug que ya pasó una vez
+                    # con el vigilante completo, ver el docstring de
+                    # correr.py). Por eso el hilo nuevo abre SU PROPIA
+                    # conexión — barata, se cierra sola al terminar.
+                    def _avisar(det=det):
+                        con_hilo = baseprecios.abrir()
+                        try:
+                            alertas.enviar_hallazgos(con_hilo, [det])
+                        finally:
+                            con_hilo.close()
+                    threading.Thread(target=_avisar, daemon=True).start()
 
             if ciclos and leidos >= ciclos * total:
                 break
@@ -386,6 +413,7 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
         print("\n  (cortado a mano)")
     finally:
         parar.set()
+        con.commit()   # última tanda sin comitear (< 50 cambios), no se pierde
 
     dur = max(1, time.time() - inicio)
     print("\nleídos: %d (%.1f/seg) · cambios: %d · hallazgos: %d · %.0f seg"
