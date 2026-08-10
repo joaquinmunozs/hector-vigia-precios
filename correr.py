@@ -48,6 +48,15 @@ import vigilante
 # checkpoint y se suba el artifact antes de cualquier corte.
 SEGUNDOS_VIGILANTE = int(3.4 * 3600)
 
+# Tope duro de la barrida (10-ago-2026, ver `barrida.segundos_max` en
+# vigia.py): con esto corriendo a la par del vigilante, el peor caso es
+# SEGUNDOS_VIGILANTE + este margen de overhead, nunca "lo que tarde la
+# barrida esta vez" — que es justo lo que se rompió cuando una tienda
+# empezó a bloquear al runner a mitad de camino. 3 h deja de sobra para
+# los ~3 h que toma un catálogo sano y corta antes de que el vigilante
+# (3.4 h) termine, así el `hilo.join()` de más abajo espera poco.
+SEGUNDOS_BARRIDA = int(3.0 * 3600)
+
 
 def _es_lunes_temprano(ahora):
     return ahora.weekday() == 0 and ahora.hour < 8
@@ -116,7 +125,7 @@ def main():
     hilo.start()
     print("\nvigilante lanzado en paralelo (%.1f h)\n" % (SEGUNDOS_VIGILANTE / 3600))
 
-    hallazgos = vigia.barrida(con, avisar=True)
+    hallazgos = vigia.barrida(con, avisar=True, segundos_max=SEGUNDOS_BARRIDA)
     print("\nestado tras la barrida:", baseprecios.estadisticas(con))
 
     if _toca_recalibrar(ahora):

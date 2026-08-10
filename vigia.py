@@ -67,7 +67,16 @@ def _bajar(url, cabeceras=None):
     # Chrome imitado: tiendas como adidas.cl responden 403 a urllib y 200 al
     # disfraz, con la misma IP. Duplicar la descarga acá dejaba esas tiendas
     # fuera de la barrida aunque el descubrimiento sí las viera.
-    return descubrir.bajar(url, tiempo=20, cabeceras=cabeceras)
+    #
+    # tiempo=8, no 20 (bajado 10-ago-2026): con 60 hilos, una tienda que
+    # empieza a bloquear/tirar el runner a medio camino deja cada hilo
+    # colgado 20 s por request fallida — eso fue lo que hizo caer el
+    # throughput de 40+/seg a 0,2/seg a mitad de una barrida real (ver
+    # `segundos_max` en `barrida`, más abajo, para el resto de la historia).
+    # 8 s sigue siendo holgado contra un sitio sano (los tiempos de
+    # respuesta medidos rondan 1-2 s) y corta 2,5x más rápido el costo de
+    # uno que no responde.
+    return descubrir.bajar(url, tiempo=8, cabeceras=cabeceras)
 
 
 def leer(tienda, url):
@@ -231,7 +240,20 @@ def _objetivos(con, limite=None):
     return objetivos
 
 
-def barrida(con, avisar=True, limite=None):
+def barrida(con, avisar=True, limite=None, segundos_max=None):
+    """`segundos_max`: corta la barrida ahí aunque queden productos sin ver.
+
+    Agregado 10-ago-2026 tras encontrar corridas reales donde el throughput
+    medido (14/seg) se desplomó a 0,2/seg a mitad de camino — una tienda
+    empezó a bloquear/tirar el runner de GitHub Actions y cada hilo quedó
+    colgado en el timeout de red en vez de fallar rápido. Sin este tope, la
+    barrida entera se quedaba corriendo hasta que GitHub la mataba a los 350
+    min, y `correr.py` nunca alcanzaba a hacer el checkpoint ni a esperar al
+    vigilante — la corrida completa se perdía y encima se acumulaba una cola
+    de corridas siguientes esperando el mismo cupo de concurrencia.
+    Cortar aquí es exactamente la misma filosofía que ya tiene la rotación
+    de `_objetivos`: si un día las cosas van lentas, se pierde VELOCIDAD (se
+    revisan menos productos esta vez), no la corrida completa."""
     objetivos = _objetivos(con, limite)
     if not objetivos:
         print("Sin productos. Corre primero:  python vigia.py --descubrir")
@@ -279,6 +301,11 @@ def barrida(con, avisar=True, limite=None):
     total = len(objetivos)
 
     while procesados < total:
+        if segundos_max and (time.time() - inicio) > segundos_max:
+            print("  (tope de %.1f h alcanzado, se corta con %d/%d — la próxima "
+                  "barrida retoma el resto por la rotación)"
+                  % (segundos_max / 3600, procesados, total))
+            break
         try:
             estado, tienda, url, d = resultados.get(timeout=120)
         except queue.Empty:
