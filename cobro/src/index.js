@@ -213,6 +213,45 @@ async function correrCronVencidos(env) {
 }
 
 
+/** Reintenta las invitaciones que quedaron a medias.
+ *
+ * Si Telegram estaba caído en el momento exacto en que alguien tocó /start, su
+ * registro quedó en `pendiente_invitacion` y hasta ahora NADIE lo retomaba: la
+ * persona pagó, no entró al grupo, y el sistema no volvía a intentarlo nunca.
+ * Es el caso que el encargo marca como inaceptable — un pago no se puede
+ * perder por un error de Telegram.
+ *
+ * Se apoya en que ya existe `telegramId`: solo llega a este estado quien tocó
+ * /start, así que se le puede escribir de vuelta.
+ */
+async function reintentarInvitaciones(env) {
+  const suscriptores = await kv.listarSuscriptores(env);
+  let recuperados = 0;
+  for (const s of suscriptores) {
+    if (s.estado !== "pendiente_invitacion" || !s.telegramId) continue;
+    try {
+      const link = await tg.crearInvitacion(env);
+      await tg.mandarTexto(env, s.telegramId,
+        `¡Listo! Ya se resolvió el problema técnico. Entra al grupo de Rat.IA acá 👇\n${link}\n\n` +
+        `Este link es de un solo uso y se agota al usarlo.`);
+      // Recién acá pasa a activo. El vencimiento se respeta si ya lo traía:
+      // el mes se le cuenta desde que pagó, no desde que pudimos escribirle.
+      await kv.guardarSuscriptor(env, s.customerId, {
+        estado: "activo",
+        vencimiento: s.vencimiento || en30Dias(),
+      });
+      recuperados++;
+    } catch (e) {
+      console.error(`Sigue fallando la invitación de ${s.customerId}:`, e);
+    }
+  }
+  if (recuperados) {
+    await tg.avisarAdmin(env,
+      `Se recuperaron ${recuperados} acceso(s) que habían quedado pendientes.`);
+  }
+}
+
+
 /* MercadoPago — alternativa a Flow para bajar el CAC.
  *
  * La campaña de Meta lleva a WhatsApp y ahí se manda el link de suscripcion
@@ -224,6 +263,73 @@ async function correrCronVencidos(env) {
  * aviso permitiria regalarse una suscripcion con un POST, asi que el estado
  * se relee SIEMPRE desde MP con el token privado.
  */
+/* VALIDACIÓN DE LA FIRMA DE MERCADOPAGO
+ *
+ * El endpoint es público: cualquiera puede pegarle. Releer el recurso desde la
+ * API con el token privado ya impide fabricar un pago de la nada, pero la firma
+ * es la que impide además que alguien REPITA un aviso ajeno que sí es válido.
+ * Las dos defensas se quedan.
+ *
+ * MP manda `x-signature: ts=1704908010,v1=<hmac>`. El manifiesto que se firma
+ * es esta cadena EXACTA, con los `;` finales incluidos:
+ *
+ *     id:{data.id};request-id:{x-request-id};ts:{ts};
+ *
+ * Dos trampas que cuestan una tarde:
+ *   · el `data.id` va en minúsculas cuando es alfanumérico;
+ *   · si no viene la cabecera `x-request-id`, ese campo se omite del
+ *     manifiesto PERO el `;` se mantiene.
+ */
+function _hex(buffer) {
+  return [...new Uint8Array(buffer)]
+    .map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Comparación de tiempo constante. Un `===` sobre el hmac filtra, por lo que
+ * tarda en fallar, cuántos caracteres iniciales acertó quien lo intenta. */
+function _igualEnTiempoConstante(a, b) {
+  if (a.length !== b.length) return false;
+  let dif = 0;
+  for (let i = 0; i < a.length; i++) dif |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return dif === 0;
+}
+
+async function firmaMPValida(req, env, aviso) {
+  // Sin secreto configurado NO se procesa. Antes esto era un `return true`
+  // "para poder probar", que es la forma de dejar el cobro abierto en
+  // producción sin que nadie lo note.
+  if (!env.MP_WEBHOOK_SECRET) {
+    console.error("MP_WEBHOOK_SECRET sin configurar: se rechaza el aviso");
+    return false;
+  }
+
+  const firma = req.headers.get("x-signature") || "";
+  const partes = Object.fromEntries(
+    firma.split(",").map((p) => {
+      const i = p.indexOf("=");
+      return i < 0 ? ["", ""] : [p.slice(0, i).trim(), p.slice(i + 1).trim()];
+    }));
+  const ts = partes.ts;
+  const recibido = partes.v1;
+  if (!ts || !recibido) return false;
+
+  const id = String(aviso.data?.id ?? "").toLowerCase();
+  const reqId = req.headers.get("x-request-id");
+
+  let manifiesto = `id:${id};`;
+  if (reqId) manifiesto += `request-id:${reqId};`;
+  manifiesto += `ts:${ts};`;
+
+  const clave = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(env.MP_WEBHOOK_SECRET),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const calculado = _hex(await crypto.subtle.sign(
+    "HMAC", clave, new TextEncoder().encode(manifiesto)));
+
+  return _igualEnTiempoConstante(calculado, recibido.toLowerCase());
+}
+
+
 /** Relee el recurso desde MP con el token privado. El aviso solo dice "pasó
  * algo con X"; creer en su cuerpo permitiría regalarse una suscripción con un
  * POST. */
@@ -238,11 +344,48 @@ function en30Dias() {
   return new Date(Date.now() + DIAS_PERIODO * 86400 * 1000).toISOString();
 }
 
-async function manejarWebhookMP(req, env) {
+/* SE RESPONDE 200 ANTES DE TRABAJAR, NO DESPUÉS
+ *
+ * MercadoPago corta la conexión a los ~22 s y, si no recibió respuesta, manda
+ * el aviso de nuevo. Con el trabajo hecho antes de responder, una tarde lenta
+ * de la API de MP o de Telegram convierte un pago en dos avisos reintentados.
+ *
+ * `ctx.waitUntil` mantiene vivo el Worker hasta que la tarea termina aunque la
+ * respuesta ya se haya ido. La contrapartida es que un fallo ya no se puede
+ * contar en la respuesta: por eso el `catch` avisa al admin en vez de quedar
+ * en un log que nadie mira — un pago perdido en silencio es lo peor que puede
+ * pasar acá.
+ */
+async function manejarWebhookMP(req, env, ctx) {
   const aviso = await req.json().catch(() => ({}));
+
+  if (!(await firmaMPValida(req, env, aviso))) {
+    return new Response("firma inválida", { status: 401 });
+  }
+
+  ctx.waitUntil(procesarAvisoMP(env, aviso).catch(async (e) => {
+    console.error("aviso de MercadoPago falló:", e);
+    try {
+      await tg.avisarAdmin(env,
+        `⚠️ Un aviso de pago de MercadoPago falló al procesarse ` +
+        `(${aviso.type || aviso.topic} ${aviso.data?.id}). ` +
+        `Puede haber un pago sin acceso entregado — revisar en el panel de MP.`);
+    } catch (e2) {
+      console.error("tampoco se pudo avisar al admin:", e2);
+    }
+  }));
+
+  return new Response(JSON.stringify({ ok: true }), {
+    headers: { "content-type": "application/json" },
+  });
+}
+
+/** El trabajo de verdad. Corre después de haber respondido, así que lo que
+ * devuelve es solo para el log: nadie lo lee del otro lado. */
+async function procesarAvisoMP(env, aviso) {
   const tipo = aviso.type || aviso.topic;
   const id = aviso.data?.id || (aviso.resource || "").split("/").pop();
-  if (!id) return new Response("sin id", { status: 200 });
+  if (!id) return "sin id";
 
   // SOLO los dos tópicos de suscripción. El tópico `payment` se ignora a
   // propósito: MP avisa CADA cobro de una suscripción por `payment` Y por
@@ -255,7 +398,7 @@ async function manejarWebhookMP(req, env) {
   const esAlta = ["subscription_preapproval", "preapproval"].includes(tipo);
   const esRenovacion = tipo === "subscription_authorized_payment";
   if (!esAlta && !esRenovacion) {
-    return new Response("ignorado", { status: 200 });
+    return "ignorado";
   }
 
   // Idempotencia ANTES de cualquier efecto: MP reintenta el mismo aviso
@@ -263,7 +406,7 @@ async function manejarWebhookMP(req, env) {
   // `authorized_payment` pueden compartir número.
   const clave = `mp:${tipo}:${id}`;
   if (await env.RATIA_KV.get(clave)) {
-    return new Response("ya procesado", { status: 200 });
+    return "ya procesado";
   }
 
   if (esRenovacion) {
@@ -271,8 +414,8 @@ async function manejarWebhookMP(req, env) {
     // devuelve `preapproval_id` y `status`. Es el único punto de este flujo
     // que no se puede comprobar sin una suscripción viva.
     const pago = await leerDeMP(env, "authorized_payments", id);
-    if (!pago) return new Response("no se pudo verificar", { status: 200 });
-    if (pago.status !== "approved") return new Response("no pagado", { status: 200 });
+    if (!pago) return "no se pudo verificar";
+    if (pago.status !== "approved") return "no pagado";
 
     const customerId = "mp:" + pago.preapproval_id;
     const sub = await kv.leerSuscriptor(env, customerId);
@@ -281,7 +424,7 @@ async function manejarWebhookMP(req, env) {
       // inventa un suscriptor, se avisa para revisarlo a mano.
       await tg.avisarAdmin(env,
         `Cobro de MercadoPago sin alta registrada (preapproval ${pago.preapproval_id}). Revisar a mano.`);
-      return new Response("sin alta", { status: 200 });
+      return "sin alta";
     }
 
     await env.RATIA_KV.put(clave, "1", { expirationTtl: 60 * 60 * 24 * 90 });
@@ -292,15 +435,14 @@ async function manejarWebhookMP(req, env) {
       plan: sub.plan || "mercadopago",
       montoBruto: Math.round(pago.transaction_amount || 0),
     });
-    return new Response(JSON.stringify({ ok: true }),
-      { headers: { "content-type": "application/json" } });
+    return "renovacion ok";
   }
 
   // ── Alta ──────────────────────────────────────────────────────────────
   const pre = await leerDeMP(env, "preapproval", id);
-  if (!pre) return new Response("no se pudo verificar", { status: 200 });
+  if (!pre) return "no se pudo verificar";
   if (pre.status !== "authorized") {
-    return new Response("no autorizada", { status: 200 });
+    return "no autorizada";
   }
 
   await env.RATIA_KV.put(clave, "1", { expirationTtl: 60 * 60 * 24 * 90 });
@@ -348,20 +490,20 @@ async function manejarWebhookMP(req, env) {
     `Mándale este acceso por WhatsApp:\n` +
     `https://t.me/HectorRat_bot?start=${token}`);
 
-  return new Response(JSON.stringify({ ok: true }), {
-    headers: { "content-type": "application/json" },
-  });
+  return "alta ok";
 }
 
 export default {
-  async fetch(req, env) {
+  // `ctx` hace falta para `waitUntil` en el webhook de MercadoPago: ahí se
+  // responde 200 al toque y el trabajo sigue después (ver manejarWebhookMP).
+  async fetch(req, env, ctx) {
     const url = new URL(req.url);
     try {
       if (url.pathname === "/iniciar") return await manejarIniciar(req, env);
       if (url.pathname === "/registro-callback") return await manejarRegistroCallback(req, env);
       if (url.pathname === "/telegram-webhook" && req.method === "POST") return await manejarTelegramWebhook(req, env);
       if (url.pathname === "/webhook/flow" && req.method === "POST") return await manejarWebhookFlow(req, env);
-      if (url.pathname === "/webhook/mercadopago" && req.method === "POST") return await manejarWebhookMP(req, env);
+      if (url.pathname === "/webhook/mercadopago" && req.method === "POST") return await manejarWebhookMP(req, env, ctx);
       return html("Rat.IA — cobro. Ver /iniciar.", 404);
     } catch (e) {
       console.error(e);
@@ -370,6 +512,18 @@ export default {
   },
 
   async scheduled(_event, env) {
-    await correrCronVencidos(env);
+    // Los vencidos primero: sacar a quien ya no paga es lo que protege el
+    // ingreso. Y va en try aparte para que un fallo ahí no impida recuperar
+    // los accesos pendientes, que es plata ya cobrada sin entregar.
+    try {
+      await correrCronVencidos(env);
+    } catch (e) {
+      console.error("cron de vencidos falló:", e);
+    }
+    try {
+      await reintentarInvitaciones(env);
+    } catch (e) {
+      console.error("reintento de invitaciones falló:", e);
+    }
   },
 };
