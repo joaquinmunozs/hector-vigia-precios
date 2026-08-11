@@ -57,8 +57,24 @@ import tiendas as cat_tiendas
 # que todas toleraron, y casi duplica el rendimiento por tienda. El límite no
 # es la máquina (esto es puro esperar red) sino no llamar la atención de un
 # WAF — por eso NO se llega al 20 medido, se deja margen.
-HILOS_POR_TIENDA = 15
-HILOS_TOTAL = 60          # tope global, sumando todas las tiendas
+# ── El cuello de botella, medido el 11-ago-2026 ──────────────────────────
+#
+# Con los ritmos ya medidos, las 24 tiendas permiten en conjunto 649 peticiones
+# por segundo. El código estaba capado en 60 hilos, que a media de 0,5 s de
+# respuesta son ~80 req/s: el límite dejó de ser la tienda y pasó a ser
+# nuestro. La última barrida hizo 150.000 fichas en 180 min — 13,9 req/s, un
+# 2% de lo que las tiendas aguantan.
+#
+# Se sube a 200 hilos globales y 40 por tienda. Eso da un techo de ~270 req/s,
+# todavía MUY por debajo de los 649 permitidos: el limitador por tienda sigue
+# siendo el que manda, y es el que protege de un bloqueo. Los hilos solo dejan
+# de estorbar.
+#
+# Con eso el catálogo completo (439.375 fichas) cabe en una sola barrida de
+# menos de una hora, así que TOPE_BARRIDA sube para no dejar nada fuera por
+# rotación.
+HILOS_POR_TIENDA = 40
+HILOS_TOTAL = 200          # tope global, sumando todas las tiendas
 PAUSA = 0.25              # entre peticiones del mismo hilo
 
 
@@ -140,7 +156,7 @@ def descubrir_productos(con, niveles=("limpia", "media"), tope_tienda=100000):
 # El tope solo NO basta, porque deja fuera para siempre a lo que quede bajo el
 # corte. Por eso va con rotación (ver `_objetivos`): los caros se revisan en
 # cada pasada y el resto va rotando, así nada queda sin mirar indefinidamente.
-TOPE_BARRIDA = 150_000
+TOPE_BARRIDA = 450_000
 
 # De ese tope, qué parte se reserva a los más caros (el resto rota). Un error
 # en un iPhone vale muchísimo más que uno en un paño de cocina, así que los
