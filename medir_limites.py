@@ -57,23 +57,28 @@ DESAFIO = ("just a moment", "checking your browser", "captcha", "access denied",
 # Una URL real por tienda (ficha o API). Se le pega SIEMPRE a la misma, que es
 # el peor caso: golpear muchas fichas distintas es más benigno que una sola.
 OBJETIVOS = {
+    # Una ficha REAL por tienda, sacada del catalogo de Hector. Medir
+    # contra una portada o un sitemap da numeros falsos: la portada de
+    # spdigital hacia creer que la tienda era lentisima.
     "falabella-api": ("https://www.falabella.com/s/browse/v1/product/cl?productId=144811750",
                       {"Referer": "https://www.falabella.com/falabella-cl/"}),
-    "ripley":        ("https://simple.ripley.cl/control-ps5-dualsense-sony-blanco-2000380632868p", {}),
-    # Apuntar a la PORTADA daba 0,3 req/s y hacía creer que la tienda era
-    # lentísima. La portada de spdigital es enorme y se genera distinto que una
-    # ficha. Siempre medir contra una ficha de producto real.
-    "spdigital":     ("https://www.spdigital.cl/001r00623-corvo-xfer-belt/", {}),
-    "adidas":        ("https://www.adidas.cl/zapatos-de-futbol-copa-mundial/015110.html", {}),
-    "tottus":        ("https://www.tottus.cl/", {}),
-    "paris":         ("https://www.paris.cl/plumon-all-season-2-plazas-916167999.html", {}),
-    # Fichas reales sacadas del catálogo, para medir las tiendas grandes
-    # que seguían con el ritmo por defecto de 5 req/s sin haberse medido.
-    "hites": ("https://www.hites.com/calzon-clasico-mujer-intime-330648.html", {}),
-    "tricot": ("https://www.tricot.cl/jeans-hombre-cl%C3%A1sico-31516.html", {}),
-    "abc": ("https://www.abc.cl/combo-cama-europea-2-plazas-celta-respaldo-y-veladores-casanova-pack-almohadas-smart-tv-led-caixun-32/29808.html", {}),
-    "bata": ("https://www.bata.com/cl/accesorios/hombre/calcetines/calcet%C3%ADn-hombre-weinbrenner-lyon-701M_2024_9819002.html", {}),
+    "antartica": ("https://www.antartica.cl/0000-una-novela-en-la-crisis-9789563320718.html", {}),
+    "casaideas": ("https://www.casaideas.cl/producto/3210900000070-tabla-de-planchar-para-mesa-63x35-5x18-8-cm.html", {}),
+    "construmart": ("https://www.construmart.cl/abrazadera-de-presion-3-86-91-mm-zin-236392", {}),
+    "doite": ("https://www.doite.cl/products/abrigo-abbie-mujer-doite", {}),
+    "farmaciasahuma": ("https://www.farmaciasahumada.cl/reflexan-10-mg-x-20-comprimidos-recubiertos-6.html", {}),
+    "hushpuppies": ("https://www.hushpuppies.cl/products/hpp-cinturon-hombre-hpmg-belt-bar-ha102031334-znn", {}),
+    "jumbo": ("https://www.jumbo.cl/jumbo-ofertas", {}),
+    "puma": ("https://cl.puma.com/pack-de-3-pares-de-calcetines-de-deporte-880355-02.html", {}),
+    "reuse": ("https://www.reuse.cl/products/hp-15-da0021cy-touch-rosado-intel-i5-8250-quad-core-8gb-1tb-reacondicionado", {}),
+    "rosen": ("https://www.rosen.cl/camas-y-colchones.html", {}),
     "salcobrand": ("https://salcobrand.cl/sitemaps/salcobrand/sitemap2.xml.gz", {}),
+    "santaisabel": ("https://www.santaisabel.cl/ablandador-klaeren-250-g-255454/p", {}),
+    "sportline": ("https://sportline.cl/products/guantes-de-box-powerlock-2-tr-hook-loop-negro-acero", {}),
+    "tricot": ("https://www.tricot.cl/jeans-hombre-cl%C3%A1sico-31516.html", {}),
+    "underarmour": ("https://www.underarmour.cl/products/zapatilla-infinite-mujer-verde", {}),
+    "vans": ("https://www.vans.cl/products/zapatillas-authentic-black-black-vn-3uvn000ee3bka0042", {}),
+    "winnerchile": ("https://winnerchile.cl/products/picadora-electrica-4-en-1-portatil", {}),
 }
 
 

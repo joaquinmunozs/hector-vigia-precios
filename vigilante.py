@@ -85,22 +85,35 @@ import extractor
 # El techo de Falabella es de NUESTRA conexión, no suyo: a 90 hilos daba 159
 # req/s y a 120 bajó a 148. Desde Modal, con mejor red, el número sube.
 RITMO_SEGURO = {
-    "falabella.com": 88.0,     # su API ni se inmuta: 100% a 120 hilos
+    # Medidos con medir_limites.py contra una FICHA real de cada tienda
+    # (11-ago-2026). El valor guardado es el 60% del ultimo escalon donde
+    # la tienda respondio 100% sin degradar, asi que ya trae margen.
+    #
+    # Antes casi todas corrian con el 5.0 por defecto, que nunca se midio.
+    # Ninguna se quejo ni a 120 hilos, salvo rosen que degrado a 60.
+    # jumbo (3.9) y vans (7.0) quedan POR DEBAJO del viejo 5.0 en un caso:
+    # son lentas de verdad, y forzarlas era arriesgar un bloqueo por nada.
+    "falabella.com": 105.0,
+    "construmart.cl": 49.0,
+    "antartica.cl": 47.5,
+    "puma.cl": 46.0,
+    "rosen.cl": 40.5,
+    "doite.cl": 29.0,
+    "farmaciasahumada.cl": 27.5,
+    "sportline.cl": 27.5,
+    "winnerchile.cl": 22.0,
+    "santaisabel.cl": 21.5,
+    "hushpuppies.cl": 20.0,
+    "reuse.cl": 16.0,
+    "underarmour.cl": 16.0,
+    "vans.cl": 7.0,
+    "jumbo.cl": 3.9,
+    # Sin medir todavia: casaideas, salcobrand y tricot fallaron la medicion
+    # (hay que darles una ficha valida). El resto conserva el defecto.
     "tottus.cl": 49.0,
     "adidas.cl": 40.0,
-    # Paris se estanca en ~27 req/s pase lo que pase con los hilos, y responde
-    # en ~1 seg: su HTML pesa 1,9 MB. No bloquea, simplemente es pesado. Por
-    # eso aporta pocos productos a la lista caliente pese a ser un retail
-    # grande — el peso de la página es el límite, no su WAF.
     "paris.cl": 16.0,
-    # 15,4 y no 8: la medición vieja apuntaba a la PORTADA de spdigital, que
-    # es enorme y se genera distinto que una ficha. Medido contra una ficha
-    # real da casi el doble. Lección: medir siempre contra lo que se va a leer.
     "spdigital.cl": 15.0,
-    # Medidas el 11-ago-2026 con medir_limites.py. Antes corrían con el 5.0
-    # por defecto, que nunca se midió: hites y abc rinden el triple y bata
-    # más de cuatro veces. El valor es el 60% del último escalón cómodo, así
-    # que ya trae margen para no rozar el bloqueo.
     "hites.com": 15.0,
     "abc.cl": 15.5,
     "bata.cl": 21.5,
