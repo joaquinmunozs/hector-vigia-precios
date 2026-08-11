@@ -40,6 +40,7 @@ tópico de errores. El tope de los tópicos de categoría es 69%.
 Nada bajo 35% llega acá, y entre 35% y 50% solo llega si es de categoría:
 ese corte lo pone `baseprecios.evaluar`, no este archivo.
 """
+import html
 import json
 import os
 import re
@@ -181,8 +182,18 @@ def _escapar(t):
 
 
 def _limpiar_nombre(nombre, url):
-    """El nombre suele venir con entidades HTML dobles o vacío."""
-    n = (nombre or "").replace("&amp;#x20;", " ").replace("&#x20;", " ")
+    """El nombre suele venir con entidades HTML dobles o vacío.
+
+    Se usa `html.unescape` DOS veces en vez de reemplazar entidades a mano.
+    El reemplazo manual solo cubría `&#x20;` (el espacio), así que Antártica
+    llegaba al suscriptor como "12 Reglas Para Vivir. Un Ant&#xED;d" — la
+    `&#xED;` (í), `&#xBA;` (º) y `&#x2F;` (/) pasaban intactas. Se ve en
+    `historial/2026-08-11.json`.
+
+    Dos pasadas porque la entidad viene doblemente escapada en algunas
+    tiendas (`&amp;#x20;`): la primera deja `&#x20;`, la segunda el espacio.
+    """
+    n = html.unescape(html.unescape(nombre or ""))
     n = " ".join(n.split())
     if not n:
         # Sin nombre, se arma uno legible desde la URL.
