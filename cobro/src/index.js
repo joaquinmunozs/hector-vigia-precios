@@ -29,6 +29,7 @@
 //        customerId con el chat_id real y manda la invitación.
 //
 //   POST /webhook/flow
+//   POST /webhook/mercadopago
 //        Notificación de Flow por cada cargo del plan (alta o renovación).
 //        SIEMPRE se confirma contra getStatus antes de creer nada — el
 //        endpoint es público, cualquiera puede pegarle al body.
@@ -211,6 +212,64 @@ async function correrCronVencidos(env) {
   if (sacados) await tg.avisarAdmin(env, `Cron de vencidos: se sacó a ${sacados} suscriptor(es).`);
 }
 
+
+/* MercadoPago — alternativa a Flow para bajar el CAC.
+ *
+ * La campaña de Meta lleva a WhatsApp y ahí se manda el link de suscripcion
+ * de MP. Se saltan la landing y el formulario de tarjeta, que son los dos
+ * pasos donde mas gente se cae.
+ *
+ * MP NO firma el webhook como Flow: manda un aviso de que "paso algo con el
+ * pago X" y hay que preguntarle a la API que paso. Confiar en el cuerpo del
+ * aviso permitiria regalarse una suscripcion con un POST, asi que el estado
+ * se relee SIEMPRE desde MP con el token privado.
+ */
+async function manejarWebhookMP(req, env) {
+  const aviso = await req.json().catch(() => ({}));
+  const tipo = aviso.type || aviso.topic;
+  const id = aviso.data?.id || (aviso.resource || "").split("/").pop();
+  if (!id) return new Response("sin id", { status: 200 });
+  if (!["payment", "subscription_preapproval", "preapproval"].includes(tipo)) {
+    return new Response("ignorado", { status: 200 });
+  }
+
+  const ruta = tipo === "payment" ? "v1/payments" : "preapproval";
+  const r = await fetch("https://api.mercadopago.com/" + ruta + "/" + id, {
+    headers: { Authorization: "Bearer " + env.MP_ACCESS_TOKEN },
+  });
+  if (!r.ok) return new Response("no se pudo verificar", { status: 200 });
+  const d = await r.json();
+  if (d.status !== "approved" && d.status !== "authorized") {
+    return new Response("no pagado", { status: 200 });
+  }
+
+  // Idempotencia: MP reintenta el mismo aviso varias veces. Sin esto, cada
+  // reintento generaria otra invitacion y otra fila de ingreso.
+  const clave = "mp:" + id;
+  if (await env.RATIA_KV.get(clave)) return new Response("ya procesado", { status: 200 });
+  await env.RATIA_KV.put(clave, "1", { expirationTtl: 60 * 60 * 24 * 90 });
+
+  const monto = Math.round(d.transaction_amount || d.auto_recurring?.transaction_amount || 0);
+  const correo = d.payer?.email || "sin correo";
+
+  await sb.registrarIngreso(env, { tipo: "alta", plan: "mercadopago", montoBruto: monto });
+
+  // El pago llega por MP, pero el comprador esta en WhatsApp: no hay pagina
+  // de retorno donde mostrarle el boton. Se genera su token de acceso y se
+  // avisa al admin para reenviarselo por el mismo chat donde venia.
+  const token = await kv.crearVinculo(env, "mp:" + id);
+  await tg.avisarAdmin(env,
+    "Pago por MercadoPago recibido (" + monto + " CLP, " + correo + ").
+" +
+    "Mandale este acceso por WhatsApp:
+" +
+    "https://t.me/HectorRat_bot?start=" + token);
+
+  return new Response(JSON.stringify({ ok: true }), {
+    headers: { "content-type": "application/json" },
+  });
+}
+
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
@@ -219,6 +278,7 @@ export default {
       if (url.pathname === "/registro-callback") return await manejarRegistroCallback(req, env);
       if (url.pathname === "/telegram-webhook" && req.method === "POST") return await manejarTelegramWebhook(req, env);
       if (url.pathname === "/webhook/flow" && req.method === "POST") return await manejarWebhookFlow(req, env);
+      if (url.pathname === "/webhook/mercadopago" && req.method === "POST") return await manejarWebhookMP(req, env);
       return html("Rat.IA — cobro. Ver /iniciar.", 404);
     } catch (e) {
       console.error(e);
