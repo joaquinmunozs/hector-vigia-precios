@@ -117,6 +117,13 @@ def _de_jsonld(html):
     return None
 
 
+# Claves cuyo contenido es un precio, pero no EL precio: por unidad de medida
+# (kilo, gramo, litro), por cuota, o de referencia.
+_RUIDO = re.compile(
+    r"unit|unidad|kilo|gram|litro|liter|medida|measure|ppum|cuota|"
+    r"installment|shipping|envio|env[íi]o", re.I)
+
+
 def _de_nextdata(html):
     m = re.search(
         r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
@@ -130,6 +137,15 @@ def _de_nextdata(html):
     hallazgo = {}
 
     def hurgar(nodo, prof=0):
+        # Ramas que contienen precios que NO son el precio del producto: el
+        # precio por kilo/gramo/litro que muestran los supermercados, y el
+        # valor de la cuota. Entrar ahí es como se leyó $681 (por gramo) en
+        # vez de $34.030 (el tarro de 500 g).
+        if isinstance(nodo, dict):
+            for clave in list(nodo):
+                if _RUIDO.search(str(clave)):
+                    nodo = {k: v for k, v in nodo.items() if not _RUIDO.search(str(k))}
+                    break
         # Tope de profundidad: estos árboles son enormes y sin límite el
         # recorrido se come el tiempo del job.
         if prof > 12 or hallazgo.get("precio"):
@@ -261,18 +277,55 @@ ESTRATEGIAS = (_de_jsonld, _de_nextdata, _de_next_streaming, _de_meta,
                _de_microdatos, _de_atributos)
 
 
+# Cuánto pueden discrepar dos estrategias antes de que el precio se considere
+# no confiable. Se calibró con el caso que lo destapó (11-ago-2026): una
+# "Manteca de cacao pura 500 g" que vale $34.030 se alertó como $681, porque
+# $681 era el PRECIO POR GRAMO que la ficha muestra al lado. La razón entre
+# ambos es 50×, así que un tope de 3× lo caza sin ambigüedad.
+#
+# Por qué 3× y no algo más fino: las estrategias apuntan todas al precio
+# VIGENTE, no al precio de lista. Un "antes $99.990 / ahora $19.990" no las
+# hace discrepar, porque ninguna lee el "antes". Si dos igual difieren más de
+# 3×, es que una está leyendo otra cosa — precio por unidad de medida, un
+# producto relacionado, una cuota — y ahí no hay forma de saber cuál.
+DESACUERDO_MAX = 3.0
+
+
 def extraer(html):
-    """Devuelve {nombre, precio, hay_stock, fuente} o lanza SinPrecio."""
+    """Devuelve {nombre, precio, hay_stock, fuente} o lanza SinPrecio.
+
+    Se corren TODAS las estrategias, no solo hasta la primera que responda.
+    El precio que se devuelve sigue siendo el de la estrategia más confiable
+    (el orden de ESTRATEGIAS no cambió); las demás corren para contrastar.
+
+    Si dos se contradicen de forma grosera, se prefiere NO medir el producto
+    antes que medirlo mal. Una ficha sin dato es invisible para el suscriptor;
+    una alerta falsa de -98% la ve entero, entra al link, se da cuenta de que
+    no existe, y deja de creerle al canal. Ese es el error caro.
+    """
     if not html or len(html) < 2000:
         # Una ficha de producto real nunca pesa tan poco. Si llega así, es una
         # página de desafío del WAF o un esqueleto que rellena JavaScript.
         raise SinPrecio("respuesta muy corta (%d bytes): bloqueo o render por JS"
                         % len(html or ""))
+
+    hallazgos = []
     for f in ESTRATEGIAS:
         try:
             r = f(html)
         except Exception:            # noqa: BLE001 — una estrategia rota no
-            continue                 # puede tumbar a las otras tres
+            continue                 # puede tumbar a las otras
         if r:
-            return r
-    raise SinPrecio("ninguna estrategia encontró precio")
+            hallazgos.append(r)
+
+    if not hallazgos:
+        raise SinPrecio("ninguna estrategia encontró precio")
+
+    precios = [h["precio"] for h in hallazgos]
+    if len(precios) > 1 and max(precios) > min(precios) * DESACUERDO_MAX:
+        raise SinPrecio(
+            "precios contradictorios (%s): %s" % (
+                ", ".join("%s=%d" % (h["fuente"], h["precio"]) for h in hallazgos),
+                "probable precio por unidad de medida"))
+
+    return hallazgos[0]
