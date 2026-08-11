@@ -1,0 +1,57 @@
+name: Sonda — ¿qué ve el runner?
+
+# Diagnóstico, no producción. Solo a mano.
+#
+# Existe porque el 11-ago-2026 el descubrimiento dio 0 fichas para paris.cl,
+# easy.cl y otras 8 tiendas, mientras que desde la conexión de Joaquín esas
+# mismas tiendas responden en menos de un segundo. Antes de pagar un proxy o
+# montar nada en otro proveedor, hay que saber QUÉ contesta la tienda cuando
+# le pregunta el runner: un 403 no se arregla con el mismo tipo de servidor.
+on:
+  workflow_dispatch:
+
+jobs:
+  sondear:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Preguntarle a las tiendas
+        run: |
+          python - <<'PY'
+          import sys
+          sys.stdout.reconfigure(encoding="utf-8")
+          from curl_cffi import requests as cffi
+
+          try:
+              ip = cffi.get("https://api.ipify.org", timeout=20).text
+          except Exception as e:
+              ip = "? (%s)" % str(e)[:40]
+          print("IP de salida del runner:", ip, "\n")
+
+          objetivos = [
+              ("paris.cl   sitemap", "https://www.paris.cl/sitemap_index.xml"),
+              ("paris.cl   home",    "https://www.paris.cl/"),
+              ("easy.cl    sitemap", "https://www.easy.cl/sitemap.xml"),
+              ("dafiti.cl  sitemap", "https://www.dafiti.cl/sitemap.xml"),
+              ("homy.cl    sitemap", "https://www.homy.cl/sitemap.xml"),
+              ("falabella  sitemap (control, este SÍ funciona)",
+               "https://www.falabella.com/sitemap.xml"),
+          ]
+          for nombre, url in objetivos:
+              try:
+                  r = cffi.get(url, impersonate="chrome", timeout=30)
+                  cuerpo = r.content or b""
+                  cabeza = cuerpo[:70].decode("utf-8", "replace").replace("\n", " ")
+                  print("%-46s HTTP %-4s %6d KB  %s"
+                        % (nombre, r.status_code, len(cuerpo) // 1024, cabeza))
+              except Exception as e:
+                  print("%-46s ERROR %s" % (nombre, str(e)[:100]))
+          PY
