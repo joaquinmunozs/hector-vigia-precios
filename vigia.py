@@ -351,8 +351,15 @@ def barrida(con, avisar=True, limite=None, segundos_max=None):
                     tienda, _plata(det["referencia"]), _plata(precio),
                     det["caida"] * 100))
 
+        # Commit por producto, no cada 250. Con 250 el lock de escritura
+        # quedaba tomado ~35 s (250 fichas a ~7/seg) mientras el vigilante,
+        # que escribe en paralelo, agotaba sus 30 s de `timeout` y moría con
+        # "database is locked". Lo que importa no es cuántos commits hay: es
+        # cuánto rato queda tomado el lock. Ver baseprecios.abrir
+        # (synchronous=NORMAL) — con eso el commit en WAL no paga fsync.
+        con.commit()
+
         if procesados % 250 == 0:
-            con.commit()
             vel = procesados / max(1, time.time() - inicio)
             print("  ... %d/%d  (%.1f/seg, quedan ~%.0f min)" % (
                 procesados, total, vel, (total - procesados) / max(vel, 0.1) / 60))

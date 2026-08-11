@@ -315,7 +315,6 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
                 for p in plan.values())
     leidos, hallazgos, inicio = 0, 0, time.time()
     ultimo_precio = {}
-    sin_comitear = 0     # cambios desde el último commit — ver más abajo
     try:
         while True:
             try:
@@ -354,19 +353,24 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
             # para poder medirlo.
             baseprecios.marcar_si_restablecido(con, url, precio)
 
-            # Commit cada 50 CAMBIOS, no en cada uno. Con la lista rotativa
-            # 8 veces más grande desde el 9-ago, casi todo lo que se lee es
-            # "nuevo" en la primera vuelta (nunca visto en `ultimo_precio`
-            # de este proceso) — comitear uno por uno multiplicó las
-            # escrituras a SQLite justo cuando más hilos compiten por el
-            # mismo archivo (la barrida corre en paralelo). Un hallazgo YA
-            # se avisó por Telegram antes de este punto, así que agrupar el
-            # commit no le cuesta nada a la velocidad de aviso — lo único
-            # que se retrasa es cuándo queda confirmado a disco.
-            sin_comitear += 1
-            if sin_comitear >= 50:
-                con.commit()
-                sin_comitear = 0
+            # Commit en CADA cambio, a propósito.
+            #
+            # Antes se agrupaba de a 50 para "reducir escrituras". Sonaba
+            # razonable y era exactamente al revés: en SQLite la primera
+            # escritura abre la transacción y toma el lock de escritura, y el
+            # lote lo mantiene tomado a través de las 50 DESCARGAS que van
+            # entre medio. La barrida, que escribe en paralelo, esperaba sus
+            # 30 s de `timeout` y moría con "database is locked" — se llevaba
+            # la corrida entera y todo lo leído (11-ago-2026, run 31449818455).
+            #
+            # No se había visto nunca porque la lista caliente venía vacía y
+            # el vigilante no escribía: el bug estaba tapado, no ausente.
+            #
+            # Comitear seguido NO es caro: con synchronous=NORMAL (ver
+            # baseprecios.abrir) el commit en WAL no paga fsync. Lo que
+            # importa no es cuántos commits hay, es cuánto rato queda tomado
+            # el lock.
+            con.commit()
 
             if anterior is not None:
                 print("  %s %s: %s → %s" % (
@@ -413,7 +417,7 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
         print("\n  (cortado a mano)")
     finally:
         parar.set()
-        con.commit()   # última tanda sin comitear (< 50 cambios), no se pierde
+        con.commit()   # por si quedó algo a medias al cortar
 
     dur = max(1, time.time() - inicio)
     print("\nleídos: %d (%.1f/seg) · cambios: %d · hallazgos: %d · %.0f seg"

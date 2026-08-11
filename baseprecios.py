@@ -147,9 +147,17 @@ def abrir():
     con.row_factory = sqlite3.Row
     con.executescript(ESQUEMA)
     _migrar(con)
-    # WAL: permite que varios hilos escriban sin bloquearse entre sí, que es
-    # necesario con el barrido concurrente.
+    # WAL: lectores y UN escritor a la vez. OJO: no permite dos escritores
+    # simultáneos — eso no existe en SQLite, con WAL ni sin él. Lo que WAL sí
+    # da es que los lectores no se bloqueen con el escritor.
     con.execute("PRAGMA journal_mode=WAL")
+    # synchronous=NORMAL es lo que hace barato comitear seguido: en WAL, con
+    # FULL cada commit paga un fsync. Y comitear seguido no es un lujo, es la
+    # única forma de que el lock de escritura no quede tomado mientras el otro
+    # hilo baja una página (ver el commit del 11-ago-2026). En WAL, NORMAL
+    # solo arriesga perder las últimas transacciones ante un corte de luz del
+    # runner, nunca corromper la base — y acá la base se rehace sola.
+    con.execute("PRAGMA synchronous=NORMAL")
     return con
 
 
