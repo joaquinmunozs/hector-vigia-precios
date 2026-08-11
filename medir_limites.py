@@ -67,6 +67,13 @@ OBJETIVOS = {
     "adidas":        ("https://www.adidas.cl/zapatos-de-futbol-copa-mundial/015110.html", {}),
     "tottus":        ("https://www.tottus.cl/", {}),
     "paris":         ("https://www.paris.cl/plumon-all-season-2-plazas-916167999.html", {}),
+    # Fichas reales sacadas del catálogo, para medir las tiendas grandes
+    # que seguían con el ritmo por defecto de 5 req/s sin haberse medido.
+    "hites": ("https://www.hites.com/calzon-clasico-mujer-intime-330648.html", {}),
+    "tricot": ("https://www.tricot.cl/jeans-hombre-cl%C3%A1sico-31516.html", {}),
+    "abc": ("https://www.abc.cl/combo-cama-europea-2-plazas-celta-respaldo-y-veladores-casanova-pack-almohadas-smart-tv-led-caixun-32/29808.html", {}),
+    "bata": ("https://www.bata.com/cl/accesorios/hombre/calcetines/calcet%C3%ADn-hombre-weinbrenner-lyon-701M_2024_9819002.html", {}),
+    "salcobrand": ("https://salcobrand.cl/sitemaps/salcobrand/sitemap2.xml.gz", {}),
 }
 
 

@@ -97,6 +97,13 @@ RITMO_SEGURO = {
     # es enorme y se genera distinto que una ficha. Medido contra una ficha
     # real da casi el doble. Lección: medir siempre contra lo que se va a leer.
     "spdigital.cl": 15.0,
+    # Medidas el 11-ago-2026 con medir_limites.py. Antes corrían con el 5.0
+    # por defecto, que nunca se midió: hites y abc rinden el triple y bata
+    # más de cuatro veces. El valor es el 60% del último escalón cómodo, así
+    # que ya trae margen para no rozar el bloqueo.
+    "hites.com": 15.0,
+    "abc.cl": 15.5,
+    "bata.cl": 21.5,
     "_por_defecto": 5.0,
 }
 
