@@ -224,8 +224,15 @@ def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None):
 
     # El piso depende de si el producto alimenta un tópico de categoría: 35%
     # para electrónica y hogar, 50% para todo lo demás.
-    categoria = categorias.clasificar(nombre, tienda, precio_actual)
-    piso = UMBRAL_CATEGORIA if categoria else UMBRAL_OFERTA
+    # El piso de precio decide si un producto BARATO merece avisarse con solo
+    # 35% de caída — no a qué tópico pertenece. Se separaban las dos cosas mal:
+    # una cortina de $9.000 con 60% de descuento perdía su categoría por el
+    # piso y terminaba solo en Ofertas, nunca en Hogar. Ahora la categoría se
+    # calcula SIN precio (es lo que el producto es) y el piso se aplica aparte
+    # (es cuánto tiene que caer para molestar a alguien).
+    categoria = categorias.clasificar(nombre, tienda)
+    categoria_con_piso = categorias.clasificar(nombre, tienda, precio_actual)
+    piso = UMBRAL_CATEGORIA if categoria_con_piso else UMBRAL_OFERTA
     if caida < piso:
         return None
 

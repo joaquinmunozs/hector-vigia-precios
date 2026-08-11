@@ -42,6 +42,7 @@ ese corte lo pone `baseprecios.evaluar`, no este archivo.
 """
 import json
 import os
+import re
 import time
 import urllib.request
 
@@ -75,6 +76,47 @@ def _rango(caida):
 
 
 # Categoría -> variable de entorno con el id de su tópico.
+
+# ── Variantes del mismo producto ─────────────────────────────────────────
+#
+# Una cortina publicada en ocho colores son ocho URLs distintas con el mismo
+# precio y la misma caída: ocho avisos idénticos que saturan el tópico y
+# hacen que la gente lo silencie. Para el suscriptor es UN producto.
+#
+# Se agrupan por (tienda, título sin el color/talla, precio). El color se
+# quita del título en vez de compararlo: dos publicaciones que solo difieren
+# en "Azul" / "Rojo" colapsan a la misma clave, y se manda una sola con el
+# número de variantes.
+_COLOR = re.compile(
+    r"\b(negro|blanco|gris|plata|dorado|beige|crema|caf[ée]|marr[óo]n|"
+    r"azul|celeste|marino|verde|oliva|amarillo|naranj[ao]|rojo|burdeo|"
+    r"rosa|rosado|fucsia|morado|lila|violeta|turquesa|coral|vino|"
+    r"multicolor|transparente|natural|"
+    r"talla\s*\w{1,4}|\b(?:xs|s|m|l|xl|xxl)\b|"
+    r"\d+\s*(?:plazas?|cm|mm|ml|lts?|litros?)|"
+    r"unitalla|surtido)\b", re.I)
+
+
+def _clave_variante(det):
+    base = _COLOR.sub("", det.get("nombre") or "")
+    base = re.sub(r"[\s\-–—,/]+", " ", base).strip().lower()
+    return (det.get("tienda"), base, int(det.get("precio") or 0))
+
+
+def agrupar_variantes(detecciones):
+    """Un aviso por producto, no por color. Devuelve (deteccion, cuantas)."""
+    grupos = {}
+    for d in detecciones:
+        grupos.setdefault(_clave_variante(d), []).append(d)
+    salida = []
+    for lista in grupos.values():
+        # Se avisa la de mayor caída: si alguna variante bajó más, esa es la
+        # que vale la pena mostrar.
+        mejor = max(lista, key=lambda x: x.get("caida") or 0)
+        salida.append((mejor, len(lista)))
+    return salida
+
+
 TOPICO_DE_CATEGORIA = {
     categorias.ELECTRONICOS: "VIGIA_TOPICO_ELECTRONICOS",
     categorias.HOGAR: "VIGIA_TOPICO_HOGAR",
@@ -190,9 +232,16 @@ def enviar_hallazgos(con, hallazgos):
     dentro de VENTANA_REPETIR, y eso es por producto, no por tópico.
     """
     enviados = 0
+    # Las variantes del mismo producto (una cortina en ocho colores) colapsan
+    # a UN aviso. Para el suscriptor es un producto; ocho mensajes idénticos
+    # son la forma más rápida de que silencie el tópico.
+    agrupados = agrupar_variantes(hallazgos)
     # Los más grandes primero: si hay muchos, los que importan salen antes.
-    for det in sorted(hallazgos, key=lambda d: -d["caida"]):
+    for det, variantes in sorted(agrupados, key=lambda x: -x[0]["caida"]):
         texto = armar_texto(det, det.get("tienda", ""))
+        if variantes > 1:
+            texto += ("\n\n<i>Disponible en %d variantes "
+                      "(color o medida).</i>" % variantes)
         llego = False
         for topico in destinos(det):
             if _enviar(texto, topico):
@@ -202,6 +251,8 @@ def enviar_hallazgos(con, hallazgos):
                 # por minuto al mismo chat.
                 time.sleep(3.5)
         if llego:
-            baseprecios.anotar_alerta(con, det)
+            for hermana in hallazgos:
+                if _clave_variante(hermana) == _clave_variante(det):
+                    baseprecios.anotar_alerta(con, hermana)
     con.commit()
     return enviados
