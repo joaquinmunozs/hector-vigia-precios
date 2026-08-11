@@ -96,3 +96,35 @@ gh secret set HECTOR_PROXY_TOKEN --repo joaquinmunozs/hector-vigia-precios
 
 Los dos tienen que quedar con el MISMO valor, o Héctor recibe 401 en cada
 petición a esas tiendas.
+
+---
+
+## Levantar una segunda instancia (otra IP)
+
+Varias instancias de Héctor pueden correr a la vez desde IPs distintas y eso
+**suma capacidad**, pero solo si cada una se hace cargo de tiendas distintas.
+Dos instancias con la misma lista no duplican volumen: duplican trabajo, y
+avisan dos veces el mismo hallazgo. Pasó el 6-ago-2026 con un deploy viejo de
+Modal corriendo en paralelo — el throughput cayó de 40/seg a 0,2/seg.
+
+Repartidas no hay duplicado posible: un hallazgo pertenece a una tienda y esa
+tienda tiene un solo dueño. Por eso todas pueden compartir el **mismo bot de
+Telegram y el mismo grupo**.
+
+1. El socio hace un fork del repo, o lo clona en su propia cuenta.
+2. Copia los secrets: `TELEGRAM_BOT_TOKEN`, `VIGIA_CHAT_ID` y los cuatro
+   `VIGIA_TOPICO_*`. Son los mismos: el objetivo es que avise al mismo grupo.
+3. Define la **variable** (no secreto) `HECTOR_TIENDAS` en Settings →
+   Variables, con su subconjunto separado por comas.
+4. Listo. Cada instancia mantiene su propia base como artifact.
+
+Reparto sugerido, por tamaño de catálogo:
+
+| Instancia | Tiendas |
+|---|---|
+| Joaquín | `falabella.com,hites.com,spdigital.cl,antartica.cl` |
+| Segunda | `tricot.cl,abc.cl,bata.cl,tottus.cl,salcobrand.cl,construmart.cl` |
+
+Las tiendas que no se nombren en ninguna instancia **quedan sin vigilar**, y
+nadie se entera: no hay error, solo dejan de llegar sus avisos. Si se reparte,
+conviene que la suma cubra las 44.

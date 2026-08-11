@@ -1,3 +1,4 @@
+import os
 # -*- coding: utf-8 -*-
 """Las tiendas chilenas a vigilar, clasificadas por su defensa anti-bot.
 
@@ -204,3 +205,34 @@ if __name__ == "__main__":
     print("tiendas registradas: %d" % len(TIENDAS))
     for k, v in resumen().items():
         print("  %-8s %d" % (k, v))
+
+
+# ── Reparto entre instancias ─────────────────────────────────────────────
+#
+# Varias instancias de Héctor pueden correr a la vez desde IPs distintas —la
+# de Joaquín, la de Alejandro, la de Max— y eso SUMA capacidad, pero solo si
+# cada una se hace cargo de tiendas DISTINTAS.
+#
+# Dos instancias con la misma lista no duplican volumen: duplican trabajo.
+# Barren las mismas fichas, gastan el doble de peticiones contra el mismo
+# servidor y avisan dos veces el mismo hallazgo. Ya pasó el 6-ago-2026, con
+# un deploy viejo de Modal corriendo en paralelo con GitHub Actions: el
+# throughput se desplomó de 40/seg a 0,2/seg.
+#
+# Repartidas, en cambio, no hay duplicado posible: un hallazgo pertenece a
+# una tienda, y esa tienda tiene un solo dueño. Por eso todas pueden
+# compartir el mismo bot de Telegram y el mismo grupo sin pisarse.
+#
+#   HECTOR_TIENDAS=falabella.com,hites.com    -> solo esas dos
+#   (sin la variable)                         -> todas
+#
+# Cada instancia mantiene su propia base: son catálogos distintos.
+_SOLO = [d.strip().lower() for d in os.environ.get("HECTOR_TIENDAS", "").split(",") if d.strip()]
+if _SOLO:
+    _CONOCIDAS = {t["dominio"] for t in TIENDAS}
+    _faltan = [d for d in _SOLO if d not in _CONOCIDAS]
+    if _faltan:
+        # Falla fuerte a propósito: un dominio mal escrito dejaría a esa
+        # tienda sin dueño y nadie lo notaria hasta echar de menos sus avisos.
+        raise SystemExit("HECTOR_TIENDAS nombra tiendas que no existen: %s" % ", ".join(_faltan))
+    TIENDAS = [t for t in TIENDAS if t["dominio"] in _SOLO]

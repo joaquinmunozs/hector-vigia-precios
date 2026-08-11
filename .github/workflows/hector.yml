@@ -102,6 +102,10 @@ jobs:
         env:
           # Solo lo prende el disparo a mano; el cron nunca lo manda, así que
           # una corrida programada jamás se salta el vigilante por esto.
+          # Reparto entre instancias. Vacío = esta instancia se hace cargo
+          # de las 44 tiendas. Si Alejandro o Max levantan la suya, cada
+          # repo define aquí SU subconjunto y no se pisan (ver tiendas.py).
+          HECTOR_TIENDAS: ${{ vars.HECTOR_TIENDAS }}
           HECTOR_SOLO_DESCUBRIR: ${{ github.event.inputs.solo_descubrir == 'true' && '1' || '0' }}
           # paris.cl y easy.cl devuelven 403 a la IP de Azure del runner y 200
           # al edge de Cloudflare. Estas dos variables son lo único que hace
