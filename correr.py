@@ -79,6 +79,32 @@ def _solo_descubrir():
     return os.environ.get("HECTOR_SOLO_DESCUBRIR", "").strip() == "1"
 
 
+
+# ── Una barrida completa AL DÍA, no cada 4 horas ─────────────────────────
+#
+# Corregido el 11-ago-2026 a instancia de Joaquín, y tenía razón. Con los
+# hilos subidos, el catálogo entero cabe en media hora, y la tentación era
+# barrerlo en cada corrida de 4 h. Eso rompe el producto por dos lados:
+#
+# 1. LA MEDIANA DEJA DE SER HISTÓRICA. `baseprecios.historial` usa las
+#    últimas 60 lecturas. A 6 barridas al día, esas 60 lecturas cubren 10
+#    días: la "referencia histórica" pasaría a ser un promedio de la semana
+#    pasada. A una barrida al día cubren dos meses, que es lo que el usuario
+#    entiende por histórico y lo que hace que una caída signifique algo.
+#
+# 2. RIESGO DE BLOQUEO. 439.375 fichas × 6 veces al día son 2,6 millones de
+#    peticiones diarias contra las mismas 24 tiendas. Ninguna medición de
+#    ritmo cubre ese volumen sostenido.
+#
+# La lista caliente NO cambia: sigue corriendo sin parar en cada corrida, y
+# es la que detecta un error de precio en menos de un minuto. La barrida
+# completa es para construir historial, y el historial se construye con
+# lecturas espaciadas, no con muchas seguidas.
+def _toca_barrida_completa(ahora):
+    """Solo en la primera corrida del día (la de las 00:00 UTC)."""
+    return ahora.hour < 4
+
+
 def _toca_recalibrar(ahora):
     """Los días 1 y 15 se refrescan las referencias con el historial real.
 
@@ -163,7 +189,12 @@ def main():
     hilo.start()
     print("\nvigilante lanzado en paralelo (%.1f h)\n" % (SEGUNDOS_VIGILANTE / 3600))
 
-    hallazgos = vigia.barrida(con, avisar=True, segundos_max=SEGUNDOS_BARRIDA)
+    if _toca_barrida_completa(ahora):
+        hallazgos = vigia.barrida(con, avisar=True, segundos_max=SEGUNDOS_BARRIDA)
+    else:
+        print("\nSin barrida completa: hoy ya se hizo (solo corre a las 00:00 UTC).")
+        print("El vigilante sigue vigilando la lista caliente.\n")
+        hallazgos = []
     print("\nestado tras la barrida:", baseprecios.estadisticas(con))
 
     if _toca_recalibrar(ahora):
