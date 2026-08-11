@@ -32,3 +32,8 @@ Thumbs.db
 
 # Config local de Claude Code (permisos, preferencias de esta máquina).
 .claude/settings.local.json
+
+# Worker del proxy de tiendas (proxy-tiendas/): deps y estado local de Wrangler.
+proxy-tiendas/node_modules/
+proxy-tiendas/.wrangler/
+proxy-tiendas/.dev.vars

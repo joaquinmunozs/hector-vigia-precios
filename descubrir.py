@@ -20,12 +20,43 @@ Por eso hay dos estrategias: sitemap directo y, si eso no da fichas, entrar a
 las categorías que el propio sitemap lista.
 """
 import gzip
+import os
 import re
 import urllib.parse
 import urllib.request
 import urllib.robotparser
 
 TIEMPO_LIMITE = 25
+
+# ── Tiendas que hay que pedir a través del proxy de Cloudflare ─────────────
+#
+# paris.cl y easy.cl contestan 403 al runner de GitHub Actions, que sale por
+# IPs de Azure (medido el 11-ago-2026: 20.169.74.50). Desde el edge de
+# Cloudflare contestan 200 con el XML de verdad. El Worker está en
+# `proxy-tiendas/` de este mismo repo.
+#
+# Sin `HECTOR_PROXY_URL` en el entorno, esto no hace NADA y todo sigue como
+# antes: en local, desde la casa de Joaquín, esas tiendas responden bien
+# directo y no hay por qué gastar peticiones del Worker.
+POR_PROXY = {"paris.cl", "www.paris.cl", "easy.cl", "www.easy.cl"}
+PROXY_URL = os.environ.get("HECTOR_PROXY_URL", "").strip()
+PROXY_TOKEN = os.environ.get("HECTOR_PROXY_TOKEN", "").strip()
+
+
+def _por_proxy(url):
+    """La URL a pedir y las cabeceras extra, si esta tienda va por el proxy."""
+    if not PROXY_URL or not PROXY_TOKEN:
+        return url, {}
+    try:
+        host = urllib.parse.urlsplit(url).hostname or ""
+    except ValueError:
+        return url, {}
+    if host.lower() not in POR_PROXY:
+        return url, {}
+    return (PROXY_URL.rstrip("/") + "/?u=" + urllib.parse.quote(url, safe=""),
+            {"x-hector-token": PROXY_TOKEN})
+
+
 CABECERAS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                    "(KHTML, like Gecko) Chrome/128.0 Safari/537.36"),
@@ -77,6 +108,13 @@ def bajar(url, tiempo=TIEMPO_LIMITE, cabeceras=None):
     todas = dict(CABECERAS)
     if cabeceras:
         todas.update(cabeceras)
+    # Las tiendas bloqueadas se piden al Worker de Cloudflare en vez de
+    # directo. Va acá adentro, y no en cada llamador, porque `bajar` es el
+    # único punto por donde salen TODAS las peticiones: descubrimiento,
+    # barrida y vigilante. Si se hiciera arriba habría que acordarse en tres
+    # lugares distintos y uno se olvidaría.
+    url, extra = _por_proxy(url)
+    todas.update(extra)
     # Las URLs con tildes o ñ (spdigital tiene "caja-abierta-dañada/...") hay
     # que percent-encodearlas: urllib intenta mandarlas como ASCII y revienta
     # con "'ascii' codec can't encode character". `safe` conserva la

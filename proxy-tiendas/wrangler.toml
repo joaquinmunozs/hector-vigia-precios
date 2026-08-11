@@ -1,0 +1,20 @@
+# Héctor · proxy de tiendas.
+#
+# ⚠️ En esta MISMA cuenta de Cloudflare (contacto@teamcondorcl.com) vive
+# `ratia-cobro`, que es el Worker de pagos de Rat.IA, y `ratia-landing`.
+# NO tienen nada que ver con esto. Los nombres empiezan con el proyecto a
+# propósito para que en el panel se distingan de un vistazo:
+#
+#   hector-proxy-tiendas   ← este, del vigía de precios
+#   ratia-cobro            ← pagos de Rat.IA (otro repo/carpeta: ../cobro)
+#   ratia-landing          ← landing de Rat.IA
+#
+# Desplegar desde ESTA carpeta: `cd proxy-tiendas && npx wrangler deploy`.
+# Si se despliega desde la raíz del repo, Wrangler puede tomar otro
+# wrangler.toml y subir el Worker equivocado — ya pasó con Rat.IA.
+name = "hector-proxy-tiendas"
+main = "index.js"
+compatibility_date = "2026-08-01"
+
+# Sin cron y sin KV a propósito: esto solo reenvía peticiones, no guarda nada.
+# El único secreto va con `wrangler secret put PROXY_TOKEN`, nunca acá.

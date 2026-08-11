@@ -103,6 +103,12 @@ jobs:
           # Solo lo prende el disparo a mano; el cron nunca lo manda, así que
           # una corrida programada jamás se salta el vigilante por esto.
           HECTOR_SOLO_DESCUBRIR: ${{ github.event.inputs.solo_descubrir == 'true' && '1' || '0' }}
+          # paris.cl y easy.cl devuelven 403 a la IP de Azure del runner y 200
+          # al edge de Cloudflare. Estas dos variables son lo único que hace
+          # que esas dos tiendas salgan por el Worker (ver proxy-tiendas/).
+          # La URL no es secreta: lo que protege al Worker es el token.
+          HECTOR_PROXY_URL: https://hector-proxy-tiendas.contacto-e95.workers.dev
+          HECTOR_PROXY_TOKEN: ${{ secrets.HECTOR_PROXY_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           VIGIA_CHAT_ID: ${{ secrets.VIGIA_CHAT_ID }}
           VIGIA_TOPICO_ERRORES: ${{ secrets.VIGIA_TOPICO_ERRORES }}
