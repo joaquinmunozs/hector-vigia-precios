@@ -122,6 +122,21 @@ CREATE TABLE IF NOT EXISTS alertas (
     avisado_en INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_alertas_url ON alertas(url);
+
+-- Qué hallazgos ya salieron a Instagram/Facebook (ver redes.py).
+--
+-- Va en una tabla aparte y NO como una columna de `alertas` a propósito: el
+-- aviso a Telegram y la publicación en redes son dos cosas con ritmos
+-- distintos (Telegram es inmediato, redes corre unas veces al día) y una
+-- puede fallar sin la otra. Con una columna, un fallo de Meta obligaría a
+-- reescribir la fila de la alerta, que es el registro de que SÍ se avisó.
+CREATE TABLE IF NOT EXISTS publicaciones (
+    url          TEXT NOT NULL,
+    red          TEXT NOT NULL,          -- 'instagram' | 'facebook'
+    publicado_en INTEGER NOT NULL,
+    id_externo   TEXT,                   -- id del post que devuelve Meta
+    PRIMARY KEY (url, red)
+);
 """
 
 
