@@ -25,7 +25,10 @@
 // mandarle el link de invitación como para el ban/unban del cron.
 
 const KEY_CONTADOR = "contador:altas";
-const LIMITE_FUNDADOR = 100; // decisión de Joaquín, 8-ago-2026
+// Se exporta porque el aviso de "llegamos al cupo" se manda desde index.js,
+// en los dos caminos de pago (Flow y MercadoPago). Tenerlo duplicado como un
+// 100 suelto allá era la forma de que un día quedaran en desacuerdo.
+export const LIMITE_FUNDADOR = 100; // decisión de Joaquín, 8-ago-2026
 
 /** Plan que le toca a la PRÓXIMA persona que se da de alta, según cuántas
  * altas nuevas hubo hasta ahora. Los primeros 100 quedan en $2.990 para

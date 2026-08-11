@@ -108,7 +108,7 @@ async function manejarRegistroCallback(req, env) {
     <!doctype html><html><head><meta charset="utf-8"><title>¡Pago recibido!</title></head>
     <body style="font-family:sans-serif;max-width:480px;margin:80px auto;text-align:center">
       <h1>¡Pago recibido!</h1>
-      <p>Último paso: tocá el botón para que Héctor te mande el acceso al grupo.</p>
+      <p>Último paso: toca el botón para que Héctor te mande el acceso al grupo.</p>
       <a href="https://t.me/HectorRat_bot?start=${token}"
          style="display:inline-block;padding:14px 28px;background:#26A5E4;color:#fff;
                 border-radius:8px;text-decoration:none;font-weight:bold">
@@ -129,13 +129,13 @@ async function manejarTelegramWebhook(req, env) {
   const token = msg.text.split(" ")[1];
   const chatId = msg.from.id;
   if (!token) {
-    await tg.mandarTexto(env, chatId, "Para entrar, pagá primero desde la landing de Rat.IA.");
+    await tg.mandarTexto(env, chatId, "Para entrar, paga primero desde la landing de Rat.IA.");
     return new Response("ok");
   }
 
   const customerId = await kv.leerVinculo(env, token);
   if (!customerId) {
-    await tg.mandarTexto(env, chatId, "Ese link ya venció. Volvé a la página de pago y tocá el botón de Telegram de nuevo.");
+    await tg.mandarTexto(env, chatId, "Ese link ya venció. Vuelve a la página de pago y toca el botón de Telegram de nuevo.");
     return new Response("ok");
   }
 
@@ -224,46 +224,129 @@ async function correrCronVencidos(env) {
  * aviso permitiria regalarse una suscripcion con un POST, asi que el estado
  * se relee SIEMPRE desde MP con el token privado.
  */
+/** Relee el recurso desde MP con el token privado. El aviso solo dice "pasó
+ * algo con X"; creer en su cuerpo permitiría regalarse una suscripción con un
+ * POST. */
+async function leerDeMP(env, ruta, id) {
+  const r = await fetch(`https://api.mercadopago.com/${ruta}/${id}`, {
+    headers: { Authorization: "Bearer " + env.MP_ACCESS_TOKEN },
+  });
+  return r.ok ? await r.json() : null;
+}
+
+function en30Dias() {
+  return new Date(Date.now() + DIAS_PERIODO * 86400 * 1000).toISOString();
+}
+
 async function manejarWebhookMP(req, env) {
   const aviso = await req.json().catch(() => ({}));
   const tipo = aviso.type || aviso.topic;
   const id = aviso.data?.id || (aviso.resource || "").split("/").pop();
   if (!id) return new Response("sin id", { status: 200 });
-  if (!["payment", "subscription_preapproval", "preapproval"].includes(tipo)) {
+
+  // SOLO los dos tópicos de suscripción. El tópico `payment` se ignora a
+  // propósito: MP avisa CADA cobro de una suscripción por `payment` Y por
+  // `subscription_authorized_payment`, así que atender los dos contaba dos
+  // veces la misma plata en Supabase y mandaba dos accesos. Rat.IA se vende
+  // solo por suscripción, así que un pago suelto no existe.
+  //
+  //   subscription_preapproval        → la suscripción se autorizó = ALTA
+  //   subscription_authorized_payment → un cobro mensual salió = RENOVACIÓN
+  const esAlta = ["subscription_preapproval", "preapproval"].includes(tipo);
+  const esRenovacion = tipo === "subscription_authorized_payment";
+  if (!esAlta && !esRenovacion) {
     return new Response("ignorado", { status: 200 });
   }
 
-  const ruta = tipo === "payment" ? "v1/payments" : "preapproval";
-  const r = await fetch("https://api.mercadopago.com/" + ruta + "/" + id, {
-    headers: { Authorization: "Bearer " + env.MP_ACCESS_TOKEN },
-  });
-  if (!r.ok) return new Response("no se pudo verificar", { status: 200 });
-  const d = await r.json();
-  if (d.status !== "approved" && d.status !== "authorized") {
-    return new Response("no pagado", { status: 200 });
+  // Idempotencia ANTES de cualquier efecto: MP reintenta el mismo aviso
+  // varias veces. La clave lleva el tópico porque un `preapproval` y un
+  // `authorized_payment` pueden compartir número.
+  const clave = `mp:${tipo}:${id}`;
+  if (await env.RATIA_KV.get(clave)) {
+    return new Response("ya procesado", { status: 200 });
   }
 
-  // Idempotencia: MP reintenta el mismo aviso varias veces. Sin esto, cada
-  // reintento generaria otra invitacion y otra fila de ingreso.
-  const clave = "mp:" + id;
-  if (await env.RATIA_KV.get(clave)) return new Response("ya procesado", { status: 200 });
+  if (esRenovacion) {
+    // VERIFICAR contra un cobro real: se asume que /authorized_payments/{id}
+    // devuelve `preapproval_id` y `status`. Es el único punto de este flujo
+    // que no se puede comprobar sin una suscripción viva.
+    const pago = await leerDeMP(env, "authorized_payments", id);
+    if (!pago) return new Response("no se pudo verificar", { status: 200 });
+    if (pago.status !== "approved") return new Response("no pagado", { status: 200 });
+
+    const customerId = "mp:" + pago.preapproval_id;
+    const sub = await kv.leerSuscriptor(env, customerId);
+    if (!sub) {
+      // Cobro de una suscripción que nunca se dio de alta acá: no se
+      // inventa un suscriptor, se avisa para revisarlo a mano.
+      await tg.avisarAdmin(env,
+        `Cobro de MercadoPago sin alta registrada (preapproval ${pago.preapproval_id}). Revisar a mano.`);
+      return new Response("sin alta", { status: 200 });
+    }
+
+    await env.RATIA_KV.put(clave, "1", { expirationTtl: 60 * 60 * 24 * 90 });
+    await kv.guardarSuscriptor(env, customerId,
+      { estado: "activo", vencimiento: en30Dias() });
+    await sb.registrarIngreso(env, {
+      tipo: "renovacion",
+      plan: sub.plan || "mercadopago",
+      montoBruto: Math.round(pago.transaction_amount || 0),
+    });
+    return new Response(JSON.stringify({ ok: true }),
+      { headers: { "content-type": "application/json" } });
+  }
+
+  // ── Alta ──────────────────────────────────────────────────────────────
+  const pre = await leerDeMP(env, "preapproval", id);
+  if (!pre) return new Response("no se pudo verificar", { status: 200 });
+  if (pre.status !== "authorized") {
+    return new Response("no autorizada", { status: 200 });
+  }
+
   await env.RATIA_KV.put(clave, "1", { expirationTtl: 60 * 60 * 24 * 90 });
 
-  const monto = Math.round(d.transaction_amount || d.auto_recurring?.transaction_amount || 0);
-  const correo = d.payer?.email || "sin correo";
+  const monto = Math.round(pre.auto_recurring?.transaction_amount || 0);
+  const correo = pre.payer_email || "sin correo";
+  const customerId = "mp:" + id;
 
-  await sb.registrarIngreso(env, { tipo: "alta", plan: "mercadopago", montoBruto: monto });
+  // El plan sale del mismo contador que Flow: la escalera de precio es del
+  // negocio, no del medio de pago. Sin esto, una alta por MP no consumía
+  // cupo de fundador y los $2.990 de por vida se repartían de más.
+  const plan = await kv.decidirPlan(env);
+  const numeroAlta = await kv.registrarAlta(env);
 
-  // El pago llega por MP, pero el comprador esta en WhatsApp: no hay pagina
-  // de retorno donde mostrarle el boton. Se genera su token de acceso y se
-  // avisa al admin para reenviarselo por el mismo chat donde venia.
-  const token = await kv.crearVinculo(env, "mp:" + id);
+  // ESTO es lo que hacía falta para que el cron de vencidos lo vea. Sin
+  // `estado` ni `vencimiento`, `correrCronVencidos` lo saltaba y quien
+  // pagaba por MP se quedaba en el grupo gratis para siempre.
+  await kv.guardarSuscriptor(env, customerId, {
+    estado: "activo",
+    plan: plan.nombre,
+    medioPago: "mercadopago",
+    mpPreapprovalId: id,
+    email: correo,
+    vencimiento: en30Dias(),
+    altaEn: new Date().toISOString(),
+  });
+
+  await sb.registrarIngreso(env, {
+    tipo: "alta",
+    plan: plan.nombre,
+    montoBruto: monto,
+  });
+
+  if (numeroAlta === kv.LIMITE_FUNDADOR) {
+    await tg.avisarAdmin(env,
+      `🎉 Rat.IA llegó a ${kv.LIMITE_FUNDADOR} altas. Los que entren desde ahora quedan en plan "regular" ($4.990).`);
+  }
+
+  // El pago llega por MP, pero el comprador está en WhatsApp: no hay página
+  // de retorno donde mostrarle el botón. Se genera su token de acceso y se
+  // avisa al admin para reenviárselo por el mismo chat donde venía.
+  const token = await kv.crearVinculo(env, customerId);
   await tg.avisarAdmin(env,
-    "Pago por MercadoPago recibido (" + monto + " CLP, " + correo + ").
-" +
-    "Mandale este acceso por WhatsApp:
-" +
-    "https://t.me/HectorRat_bot?start=" + token);
+    `Pago por MercadoPago recibido (${monto} CLP, ${correo}) — alta #${numeroAlta}, plan ${plan.nombre}.\n` +
+    `Mándale este acceso por WhatsApp:\n` +
+    `https://t.me/HectorRat_bot?start=${token}`);
 
   return new Response(JSON.stringify({ ok: true }), {
     headers: { "content-type": "application/json" },
