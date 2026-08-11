@@ -10,6 +10,12 @@
 config.json
 credenciales*.json
 
+# Archivo puente para cargar secretos SIN pegarlos en un chat ni en un
+# comando. Se escribe a mano, se usa una vez para llenar los secrets de
+# GitHub y de Cloudflare, y se borra. Ver docs/PUESTA-EN-MARCHA.md.
+secretos.local
+secretos.local.*
+
 # La base de precios. No va al repo a propósito: git no deduplica binarios
 # que cambian en cada corrida, así que commitearla 6 veces al día haría
 # crecer el historial sin freno. Persiste como "artifact" de GitHub Actions
