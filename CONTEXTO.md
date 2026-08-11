@@ -122,18 +122,102 @@ Electrónicos; al 60% aparece en los dos.
 Antes de enviar, **las variantes del mismo producto colapsan en un mensaje**
 (una cortina en ocho colores es un producto, no ocho avisos).
 
-### Estado real de los datos
+---
+
+## 3 bis. Estado real de los datos — 11-ago-2026
+
+> Los números salen de la base de producción (el artifact de la última corrida,
+> 319 MB, última lectura **11-ago 14:21**). **No** de la copia local, que está
+> desactualizada y da cifras mucho menores — si alguien mide sobre su
+> `precios.db` local va a creer que el sistema está peor de lo que está.
 
 | | |
 |---|---|
-| Fichas en catálogo | ~151.000 |
+| Fichas descubiertas | **360.863** |
+| Fichas **con precio medido** | **175.212** (48,6%) |
+| Fichas con 5+ lecturas (listas para detectar ofertas) | **41.462** |
 | Tiendas configuradas | 44 |
-| Tiendas con datos | 16 |
-| Corre | GitHub Actions, cada 4 h |
+| Tiendas **con datos** | **21** |
+| Tiendas sin una sola ficha | **23** |
+| Alertas emitidas en total | 46 (1 error de precio, 21 ofertas, 24 de categoría) |
 
-**El catálogo se repuebla solo los lunes.** Si un lunes falla, pasa una semana
-con el catálogo que haya. Es la fragilidad operativa más grande que tiene el
-sistema hoy.
+Las 41.462 con historial suficiente son **el activo real del negocio**: son las
+únicas sobre las que hoy se puede afirmar un descuento con respaldo. El resto
+del catálogo todavía está juntando historia.
+
+### Las 21 tiendas que sí están dando datos
+
+| Tienda | Fichas | Medidas | % | Nota |
+|---|---:|---:|---:|---|
+| falabella.com | 86.745 | 62.806 | 72% | El catálogo más grande |
+| hites.com | 84.130 | 28.683 | 34% | Mucho por medir todavía |
+| spdigital.cl | 64.903 | 799 | **1,2%** | Descubierto casi entero, medido casi nada |
+| tricot.cl | 25.947 | 25.856 | **99,6%** | |
+| bata.cl | 19.168 | 8.323 | 43% | |
+| tottus.cl | 16.322 | 55 | **0,3%** | Recién empezando |
+| salcobrand.cl | 14.209 | 12.618 | 89% | |
+| santaisabel.cl | 11.191 | 8.012 | 72% | |
+| construmart.cl | 9.886 | 9.886 | **100%** | |
+| antartica.cl | 8.043 | 8.043 | **100%** | |
+| puma.cl | 6.850 | 1.193 | 17% | |
+| farmaciasahumada.cl | 5.408 | 5.405 | **100%** | |
+| underarmour.cl | 2.372 | 1.455 | 61% | |
+| hushpuppies.cl | 2.189 | 0 | **0%** | Descubre pero no mide |
+| vans.cl | 1.001 | 0 | **0%** | Descubre pero no mide |
+| doite.cl | 928 | 928 | 100% | |
+| rosen.cl | 768 | 532 | 69% | |
+| reuse.cl | 433 | 433 | 100% | |
+| sportline.cl | 226 | 108 | 48% | |
+| winnerchile.cl | 140 | 73 | 52% | |
+| adidas.cl | 4 | 4 | 100% | Prácticamente sin descubrir |
+
+### Las 23 tiendas configuradas que NO están dando nada
+
+```
+paris.cl        easy.cl          jumbo.cl         casaideas.cl
+dinsa.cl        wei.cl           dafiti.cl        crandon.cl
+converse.cl     kmarket.cl       buscalibre.cl    mall.cl
+dijon.com       tecnored.cl      abc.cl           preunic.cl
+pcfactory.cl    reifschneider.cl homy.cl          ripley.cl
+cruzverde.cl    decathlon.cl     apple.com/cl
+```
+
+Están en `tiendas.py` pero su catálogo está vacío en producción. Las causas
+conocidas, por grupo:
+
+- **paris.cl y easy.cl** — devuelven **403 a la IP de Azure** del runner de
+  GitHub. Ya existe la solución: salen por el Worker `hector-proxy-tiendas` de
+  Cloudflare, probado A/B en el mismo job (60 fichas vs 403). Aparecen en cero
+  porque el descubrimiento con proxy todavía no corrió completo.
+- **dafiti.cl y homy.cl** — **no tienen sitemap**. Necesitan descubrimiento por
+  crawl de categorías, que no está implementado.
+- **buscalibre.cl** — su ficha de producto llega en 9 KB y el precio lo pinta
+  JavaScript después. El HTML crudo no alcanza: necesita navegador.
+- **tricot.cl, salcobrand.cl, casaideas.cl** — fallaron al medir sus límites de
+  velocidad, así que no tienen ritmo seguro asignado. (Tricot y Salcobrand
+  después se recuperaron y hoy están entre las mejores; casaideas sigue en
+  cero.)
+- **El resto** — no se ha llegado a ellas. El catálogo se repuebla solo los
+  lunes y no alcanza a cubrir las 44 en una pasada.
+
+### Los tres casos raros que conviene mirar primero
+
+**spdigital.cl: 64.903 descubiertas, 799 medidas (1,2%).** Es la tercera tienda
+más grande del catálogo y está prácticamente sin medir. Desbloquear esto sube
+la cobertura más que agregar cualquier tienda nueva.
+
+**hushpuppies.cl y vans.cl: descubren bien, miden 0%.** 3.190 fichas con URL y
+ni un precio. Eso no es falta de tiempo — es que el extractor no encuentra el
+precio en esas páginas. Necesitan un adaptador propio en `adaptadores.py`.
+
+**tottus.cl: 16.322 fichas, 55 medidas.** Recién descubierta, todavía no le
+tocó su turno de medición.
+
+### La fragilidad operativa más grande
+
+**El catálogo se repuebla solo los lunes, antes de las 08:00 UTC.** Si ese
+lunes falla, pasa una semana entera con el catálogo que haya quedado. Ya pasó:
+llegó a quedar en 3 de 44 tiendas.
 
 ---
 
@@ -300,16 +384,24 @@ Secrets que usa el scraper: `TELEGRAM_BOT_TOKEN`, `VIGIA_CHAT_ID`,
 ### Importante pero no bloquea
 
 3. **Bajar el CAC.** Es el número que decide si el negocio existe.
-4. **El catálogo quedó en 3 de 44 tiendas** y solo se repuebla los lunes antes
-   de las 08:00 UTC. Si no se fuerza, pasa una semana así.
-5. **Re-medir tricot, salcobrand y casaideas** — fallaron al medir sus límites.
-6. **dafiti y homy no tienen sitemap**: necesitan descubrimiento por crawl de
-   categorías.
+4. **Medir spdigital.cl.** 64.903 fichas descubiertas y solo 799 medidas
+   (1,2%). Es la tercera tienda más grande: desbloquearla sube la cobertura
+   más que agregar cualquier tienda nueva.
+5. **Adaptador para hushpuppies.cl y vans.cl.** Descubren 3.190 fichas entre
+   las dos y miden **cero**. No es falta de tiempo: el extractor no encuentra
+   el precio en esas páginas.
+6. **Terminar el descubrimiento de paris.cl y easy.cl por el proxy.** La
+   solución al 403 ya existe y está probada; falta que corra completa.
+7. **dafiti.cl y homy.cl no tienen sitemap**: necesitan descubrimiento por
+   crawl de categorías, que no está implementado.
+8. **casaideas.cl** sigue sin medir tras fallar la medición de límites.
+9. **Forzar el repoblado del catálogo** si un lunes falla — si no, pasa una
+   semana con lo que haya.
 
 ### Ideas que no empezaron
 
-7. Repartir tiendas con Max (el código ya está, falta acordar el reparto).
-8. Análisis quincenal leyendo `historial/` para ajustar umbrales con datos.
+10. Repartir tiendas con Max (el código ya está, falta acordar el reparto).
+11. Análisis quincenal leyendo `historial/` para ajustar umbrales con datos.
 
 ---
 
