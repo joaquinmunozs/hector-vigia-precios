@@ -6,6 +6,10 @@
 > lo que ya dice el código: repite lo que el código **no puede** decir.
 >
 > Última actualización: **11-ago-2026**.
+>
+> **El encargo técnico de las dos integraciones que faltan (MercadoPago e
+> Instagram) está en [`INTEGRACIONES.md`](INTEGRACIONES.md)** — endpoints,
+> credenciales y trampas conocidas, listo para implementar.
 
 ---
 
