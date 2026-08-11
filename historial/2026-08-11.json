@@ -1,0 +1,172 @@
+{
+ "semana_hasta": "2026-08-11",
+ "cobertura": {
+  "fichas_en_catalogo": 151135,
+  "con_precio_medido": 520,
+  "con_historial_suficiente": 287,
+  "leidos_esta_semana": 520
+ },
+ "movimiento_por_tienda": [
+  {
+   "tienda": "antartica.cl",
+   "productos": 109,
+   "pct_con_movimiento": 11.9,
+   "bajadas": 6,
+   "alzas": 7,
+   "baja_mediana_pct": 15.0,
+   "alza_mediana_pct": 42.9
+  },
+  {
+   "tienda": "falabella.com",
+   "productos": 411,
+   "pct_con_movimiento": 3.6,
+   "bajadas": 8,
+   "alzas": 7,
+   "baja_mediana_pct": 39.0,
+   "alza_mediana_pct": 21.9
+  }
+ ],
+ "inflaron_antes_de_rebajar": {
+  "casos": 0,
+  "sobre_productos_con_3_lecturas": 493,
+  "ejemplos": []
+ },
+ "bajadas_por_dia": {
+  "lunes": 7,
+  "martes": 0,
+  "miércoles": 0,
+  "jueves": 0,
+  "viernes": 0,
+  "sábado": 0,
+  "domingo": 7
+ },
+ "mas_volatiles": [
+  {
+   "tienda": "falabella.com",
+   "producto": "5 Mts Cable Electrico Yute Bipolar Textil Rustico 2 x 0.75",
+   "recorrido_pct": 400.0,
+   "min": 2598,
+   "max": 12990,
+   "lecturas": 4
+  },
+  {
+   "tienda": "falabella.com",
+   "producto": "Set x4 Sillas de Comedor Top Living Dinka Cielo Terciopelo",
+   "recorrido_pct": 300.0,
+   "min": 39998,
+   "max": 159990,
+   "lecturas": 12
+  },
+  {
+   "tienda": "falabella.com",
+   "producto": "Crea tus Collets Tie Dye Neón Fashion Angels",
+   "recorrido_pct": 200.0,
+   "min": 8330,
+   "max": 24990,
+   "lecturas": 4
+  },
+  {
+   "tienda": "falabella.com",
+   "producto": "Limpia cristales vidrio con brazo telescopio",
+   "recorrido_pct": 100.0,
+   "min": 6500,
+   "max": 13000,
+   "lecturas": 4
+  },
+  {
+   "tienda": "falabella.com",
+   "producto": "Polera Niño Monologo Relaxed Negro Calvin Klein",
+   "recorrido_pct": 69.4,
+   "min": 15990,
+   "max": 32990,
+   "lecturas": 6
+  },
+  {
+   "tienda": "falabella.com",
+   "producto": "Zapato Mujer Puntilla Vizzano 1323-201-23572",
+   "recorrido_pct": 68.8,
+   "min": 20990,
+   "max": 42990,
+   "lecturas": 6
+  },
+  {
+   "tienda": "falabella.com",
+   "producto": "Zapato Mujer Puntilla Vizzano 1323-201-23572",
+   "recorrido_pct": 68.8,
+   "min": 20990,
+   "max": 42990,
+   "lecturas": 6
+  },
+  {
+   "tienda": "antartica.cl",
+   "producto": "10&#x20;Pasos&#x20;Para&#x20;Alinear&#x20;La&#x20;Cabeza&#x2",
+   "recorrido_pct": 42.9,
+   "min": 12250,
+   "max": 17500,
+   "lecturas": 8
+  },
+  {
+   "tienda": "antartica.cl",
+   "producto": "12&#x20;Reglas&#x20;Para&#x20;Vivir.&#x20;Un&#x20;Ant&#xED;d",
+   "recorrido_pct": 42.9,
+   "min": 18830,
+   "max": 26900,
+   "lecturas": 9
+  },
+  {
+   "tienda": "antartica.cl",
+   "producto": "20Th&#x20;Century&#x20;Boys&#x20;N&#xBA;&#x20;04&#x2F;11&#x2",
+   "recorrido_pct": 42.9,
+   "min": 18130,
+   "max": 25900,
+   "lecturas": 9
+  },
+  {
+   "tienda": "antartica.cl",
+   "producto": "20Th&#x20;Century&#x20;Boys&#x20;N&#xBA;&#x20;06&#x2F;11&#x2",
+   "recorrido_pct": 42.9,
+   "min": 18130,
+   "max": 25900,
+   "lecturas": 9
+  },
+  {
+   "tienda": "antartica.cl",
+   "producto": "20Th&#x20;Century&#x20;Boys&#x20;N&#xB0;07&#x2F;11&#x20;&#x2",
+   "recorrido_pct": 42.9,
+   "min": 18130,
+   "max": 25900,
+   "lecturas": 9
+  },
+  {
+   "tienda": "antartica.cl",
+   "producto": "50&#x20;Tecnicas&#x20;De&#x20;Mindfulness&#x20;Para&#x20;La&",
+   "recorrido_pct": 35.3,
+   "min": 16660,
+   "max": 23800,
+   "lecturas": 10
+  },
+  {
+   "tienda": "antartica.cl",
+   "producto": "50&#x20;Locuras&#x20;Que&#x20;Hacen&#x20;Las&#x20;Mascotas",
+   "recorrido_pct": 30.0,
+   "min": 9660,
+   "max": 13800,
+   "lecturas": 8
+  },
+  {
+   "tienda": "falabella.com",
+   "producto": "Polera Piqué Manga Corta Premium 6040 Ideal Para Bordar",
+   "recorrido_pct": 28.0,
+   "min": 12990,
+   "max": 18040,
+   "lecturas": 4
+  }
+ ],
+ "alertas": {
+  "total": 0,
+  "por_tipo": {},
+  "por_tienda": {},
+  "caida_mediana_pct": null
+ },
+ "duracion_errores_min": null
+}

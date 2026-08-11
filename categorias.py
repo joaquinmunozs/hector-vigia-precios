@@ -59,7 +59,12 @@ HOGAR = "hogar"
 # Bajo esto no se clasifica en ningún tópico de categoría, por mucho que
 # calce. Los tópicos de categoría bajan el piso al 35% de descuento, así que
 # sin un piso de precio se llenarían de rebajas de tres lucas.
-PRECIO_MINIMO = 100_000
+# Bajó de $100.000 a $20.000 el 11-ago-2026. El piso alto dejaba fuera gangas
+# reales —una creatina de $20.000 a $10.000 lo es— y el trabajo de filtrar la
+# basura pasó a hacerlo el AHORRO en pesos, que está en baseprecios. Acá queda
+# solo un piso de cordura: bajo $20.000 casi nada de hogar o electrónica es
+# el producto mismo, es un accesorio.
+PRECIO_MINIMO = 20_000
 
 # Se evalúa PRIMERO y descarta. Son cosas que calzan con los patrones de
 # abajo pero no son el producto: accesorios baratos, repuestos, consumibles.

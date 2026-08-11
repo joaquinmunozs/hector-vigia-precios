@@ -47,6 +47,10 @@ import baseprecios
 import categorias
 
 SEMANA = 7 * 24 * 3600
+
+# Los resúmenes semanales viven en el repo, no como artifact: son livianos y
+# tienen que sobrevivir para poder mirarlos de a varios meses.
+HISTORIAL = "historial"
 MODELO = "claude-sonnet-5"
 
 # Una subida de al menos esto, seguida de una bajada, es el patrón de la
@@ -324,11 +328,27 @@ def main():
     print(json.dumps(datos["cobertura"], ensure_ascii=False))
     print("casos de alza previa: %d" % datos["inflaron_antes_de_rebajar"]["casos"])
 
+    # EL HISTORIAL ES EL PRODUCTO, NO EL ANÁLISIS
+    #
+    # Esto se guarda SIEMPRE, aunque no haya modelo que lo lea. La base de
+    # precios vive como artifact y se borra a los 3 días; estos resúmenes
+    # semanales son livianos, van al repo y quedan para siempre. Cada 15 días
+    # se leen todos juntos y ahí recién aparece lo que una sola semana no
+    # muestra: si una tienda infla siempre antes del mismo feriado, si el día
+    # de las rebajas se corrió, si un umbral quedó mal puesto hace un mes.
+    os.makedirs(HISTORIAL, exist_ok=True)
+    destino = os.path.join(HISTORIAL, "%s.json" % datos["semana_hasta"])
+    with open(destino, "w", encoding="utf-8") as f:
+        json.dump(datos, f, ensure_ascii=False, indent=1)
+    print("historial guardado en %s" % destino)
+
     clave = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
     if not clave:
-        print("sin ANTHROPIC_API_KEY: se imprimen los datos y no se analiza")
-        print(json.dumps(datos, ensure_ascii=False, indent=1)[:4000])
-        return 1
+        # No es un error. El historial —que es lo que importa— ya quedó
+        # escrito; el análisis en prosa es un extra que se puede hacer después
+        # leyendo estos archivos.
+        print("sin ANTHROPIC_API_KEY: se guardó el historial y no se redacta análisis")
+        return 0
 
     texto = pensar(datos, clave)
     if a.probar:

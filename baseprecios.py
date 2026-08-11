@@ -58,7 +58,18 @@ RUTA = os.environ.get("VIGIA_DB", os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "precios.db"))
 
 UMBRAL_ERROR = 0.70        # 70%+ bajo la referencia = error de precio
-UMBRAL_OFERTA = 0.50       # 50%-70% = oferta real, para cualquier producto
+UMBRAL_OFERTA = 0.40       # 40%-70% = oferta real, para cualquier producto
+
+# EL FILTRO NO ES EL PRECIO, ES EL AHORRO (11-ago-2026)
+#
+# Un piso de precio alto deja fuera gangas de verdad: una creatina de $20.000
+# a $10.000 es un hallazgo, y con un piso de $100.000 nunca se avisaba. Pero
+# sin ningún filtro entra la basura, porque el 50% de $2.000 también es 50%.
+#
+# Lo que separa una cosa de la otra no es cuánto vale el producto sino cuánta
+# plata se ahorra el suscriptor. $10.000 de ahorro importan igual en una
+# creatina que en un notebook; $900 no importan en ninguno de los dos.
+AHORRO_MINIMO = 8_000
 UMBRAL_CATEGORIA = 0.35    # 35%-50%: SOLO electrónicos u hogar, ver arriba
 # Historial mínimo para no depender de la línea base. Subió de 3 a 5 el
 # 11-ago-2026: con una barrida completa al día, 3 lecturas son 3 días y la
@@ -238,6 +249,10 @@ def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None):
     categoria_con_piso = categorias.clasificar(nombre, tienda, precio_actual)
     piso = UMBRAL_CATEGORIA if categoria_con_piso else UMBRAL_OFERTA
     if caida < piso:
+        return None
+
+    # El ahorro en pesos, no el precio del producto. Ver AHORRO_MINIMO.
+    if (referencia - precio_actual) < AHORRO_MINIMO:
         return None
 
     # UNA OFERTA SIN HISTORIAL NO SE AVISA (11-ago-2026)

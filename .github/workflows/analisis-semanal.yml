@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      contents: read
+      contents: write   # para commitear el historial semanal
       actions: read       # para encontrar el artifact de la barrida
 
     steps:
@@ -64,3 +64,15 @@ jobs:
           # Opcional. Sin esto el análisis cae al hilo general del grupo.
           VIGIA_TOPICO_ANALISIS: ${{ secrets.VIGIA_TOPICO_ANALISIS }}
         run: python -u analisis_semanal.py
+
+      # El historial se commitea al repo. Es la única parte que persiste: la
+      # base de precios se borra a los 3 días y estos resúmenes son los que se
+      # leen de a varios meses para ver patrones que una semana no muestra.
+      - name: Guardar el historial en el repo
+        run: |
+          git config user.name  "hector-bot"
+          git config user.email "hector@condorai.cl"
+          git add historial/
+          git diff --cached --quiet && echo "sin cambios" && exit 0
+          git commit -m "Historial de precios: semana del $(date +%Y-%m-%d)"
+          git push
