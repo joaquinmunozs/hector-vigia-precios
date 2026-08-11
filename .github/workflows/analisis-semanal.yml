@@ -1,0 +1,66 @@
+name: Héctor — análisis semanal
+
+# Domingo 21:00 de Chile (01:00 UTC del lunes). A esa hora ya corrió la
+# barrida completa del domingo, así que la semana está cerrada con siete
+# lecturas de cada producto — incluido el fin de semana, que es cuando el
+# retail chileno mueve más.
+#
+# Este workflow SOLO LEE la base. No la vuelve a subir como artifact: si lo
+# hiciera, sobrescribiría el estado de la barrida con una copia vieja.
+on:
+  schedule:
+    - cron: "0 1 * * 1"
+  workflow_dispatch:
+
+jobs:
+  analizar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read       # para encontrar el artifact de la barrida
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Acá sí se puede pedir "la corrida más reciente" sin el rodeo que hace
+      # hector.yml: ese workflow tiene que excluirse a sí mismo porque busca
+      # SU propio artifact anterior. Este es otro workflow, así que la corrida
+      # más reciente de hector.yml nunca es esta.
+      - name: Encontrar la última barrida
+        id: barrida
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUN_ID=$(gh api "repos/${{ github.repository }}/actions/workflows/hector.yml/runs?per_page=10" \
+            --jq "[.workflow_runs[] | select(.conclusion == \"success\")][0].id // \"\"")
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "Barrida: ${RUN_ID:-ninguna}"
+
+      - name: Traer la base
+        if: steps.barrida.outputs.run_id != ''
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: precios-db
+          run_id: ${{ steps.barrida.outputs.run_id }}
+          if_no_artifact_found: fail
+
+      # Sin base no hay análisis, y un análisis inventado sobre una base vacía
+      # es peor que ninguno: se lee igual de convincente.
+      - name: Verificar que hay base
+        run: |
+          test -f precios.db || { echo "no se recuperó precios.db"; exit 1; }
+          echo "base: $(du -h precios.db | cut -f1)"
+
+      - name: Analizar y publicar
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          VIGIA_CHAT_ID: ${{ secrets.VIGIA_CHAT_ID }}
+          # Opcional. Sin esto el análisis cae al hilo general del grupo.
+          VIGIA_TOPICO_ANALISIS: ${{ secrets.VIGIA_TOPICO_ANALISIS }}
+        run: python -u analisis_semanal.py

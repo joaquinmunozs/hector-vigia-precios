@@ -117,6 +117,11 @@ def agrupar_variantes(detecciones):
     return salida
 
 
+# Desde esta caída, un hallazgo de categoría se duplica también en Ofertas:
+# ya no es "una buena oferta de hogar", es de las mejores del día y merece
+# estar donde mira todo el mundo.
+UMBRAL_DUPLICAR = 0.60
+
 TOPICO_DE_CATEGORIA = {
     categorias.ELECTRONICOS: "VIGIA_TOPICO_ELECTRONICOS",
     categorias.HOGAR: "VIGIA_TOPICO_HOGAR",
@@ -154,7 +159,16 @@ def destinos(det):
         destino = os.environ.get(var) if var else None
         if destino:
             ids.append(destino)
-        elif det["tipo"] == baseprecios.OFERTA:
+
+        # Ofertas es el acceso rápido a lo urgente, no el cajón de lo que
+        # sobra. Recibe dos cosas:
+        #   · lo que no calza en ninguna categoría (ropa, zapatillas, deporte)
+        #   · TODO lo que pase el 60%, tenga la categoría que tenga
+        # Un iPhone al 59% se queda solo en Electrónicos; al 60% aparece en los
+        # dos. Quien quiere lo prioritario mira un tópico; quien quiere su
+        # categoría completa, la suya.
+        if det["caida"] >= UMBRAL_DUPLICAR or (
+                not destino and det["tipo"] == baseprecios.OFERTA):
             ids.append(os.environ.get("VIGIA_TOPICO_OFERTAS"))
 
     ids = [i for i in ids if i]
