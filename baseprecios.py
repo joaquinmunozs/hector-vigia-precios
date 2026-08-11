@@ -60,7 +60,11 @@ RUTA = os.environ.get("VIGIA_DB", os.path.join(
 UMBRAL_ERROR = 0.70        # 70%+ bajo la referencia = error de precio
 UMBRAL_OFERTA = 0.50       # 50%-70% = oferta real, para cualquier producto
 UMBRAL_CATEGORIA = 0.35    # 35%-50%: SOLO electrónicos u hogar, ver arriba
-MIN_OBSERVACIONES = 3      # historial mínimo para no depender de la línea base
+# Historial mínimo para no depender de la línea base. Subió de 3 a 5 el
+# 11-ago-2026: con una barrida completa al día, 3 lecturas son 3 días y la
+# mediana todavía se mueve con cualquier promoción de fin de semana. Con 5 ya
+# hay dos fines de semana adentro y el número deja de bailar.
+MIN_OBSERVACIONES = 5
 VENTANA_REPETIR = 12 * 3600
 TOPE_FALLOS = 2        # fallos seguidos antes de descartar una URL
 
@@ -234,6 +238,21 @@ def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None):
     categoria_con_piso = categorias.clasificar(nombre, tienda, precio_actual)
     piso = UMBRAL_CATEGORIA if categoria_con_piso else UMBRAL_OFERTA
     if caida < piso:
+        return None
+
+    # UNA OFERTA SIN HISTORIAL NO SE AVISA (11-ago-2026)
+    #
+    # Sin historial, la referencia es la foto del día que se descubrió el
+    # producto. Si ese día estaba inflado —y en el retail chileno se infla
+    # justo antes de cada Cyber— el precio normal de la semana siguiente se ve
+    # como un -55% que nunca existió. Ese es el falso positivo caro: no se nota
+    # revisando el mensaje, solo entrando a comprar.
+    #
+    # Los ERRORES de precio sí siguen saliendo desde el primer día: para pasar
+    # el 70% no basta con una referencia mal fijada, el precio tiene que haberse
+    # caído de verdad. Y el error dura minutos — esperar historial sería llegar
+    # tarde siempre, que es lo mismo que no avisar.
+    if not con_historial and caida < UMBRAL_ERROR:
         return None
 
     # Con historial, además tiene que ser el más barato jamás visto: si ya

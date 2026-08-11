@@ -137,13 +137,25 @@ def destinos(det):
         # categoría, porque el tope de esos tópicos es 69%.
         ids.append(os.environ.get("VIGIA_TOPICO_ERRORES"))
     else:
-        if det["tipo"] == baseprecios.OFERTA:
-            ids.append(os.environ.get("VIGIA_TOPICO_OFERTAS"))
-        # El duplicado: 50%-70% de categoría sale también acá. Y 35%-50%
-        # de categoría sale ÚNICAMENTE acá.
+        # UN SOLO DESTINO POR HALLAZGO (11-ago-2026)
+        #
+        # Antes, un producto de categoría entre 50% y 70% salía DOS veces: en
+        # Ofertas y en su tópico. La idea era que nadie se perdiera nada. En la
+        # práctica pasó lo contrario: Ofertas terminó siendo la suma de todos
+        # los tópicos y quedó saturado, que es la forma más rápida de que
+        # alguien lo silencie — y un tópico silenciado no vende nada.
+        #
+        # Ahora cada hallazgo tiene un destino y solo uno: si es de hogar va a
+        # Hogar, si es de electrónica va a Electrónicos, y Ofertas se queda con
+        # lo que no calza en ninguna categoría (ropa, zapatillas, deporte).
+        # Quien quiera verlo todo se suscribe a los tres tópicos; quien solo
+        # quiera hogar ya no tiene que aguantar el resto.
         var = TOPICO_DE_CATEGORIA.get(det.get("categoria"))
-        if var:
-            ids.append(os.environ.get(var))
+        destino = os.environ.get(var) if var else None
+        if destino:
+            ids.append(destino)
+        elif det["tipo"] == baseprecios.OFERTA:
+            ids.append(os.environ.get("VIGIA_TOPICO_OFERTAS"))
 
     ids = [i for i in ids if i]
     return ids or [None]
