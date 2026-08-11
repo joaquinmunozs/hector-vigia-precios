@@ -23,7 +23,30 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Preguntarle a las tiendas
+      # Prueba el camino REAL: `descubrir.fichas_de` con el proxy encendido,
+      # que es exactamente lo que corre en producción. No sirve probar solo
+      # que el Worker contesta — hay que ver que Héctor saque fichas.
+      - name: Descubrir por el proxy (paris y easy)
+        env:
+          HECTOR_PROXY_URL: https://hector-proxy-tiendas.contacto-e95.workers.dev
+          HECTOR_PROXY_TOKEN: ${{ secrets.HECTOR_PROXY_TOKEN }}
+        run: |
+          python - <<'PY'
+          import sys
+          sys.stdout.reconfigure(encoding="utf-8")
+          import descubrir
+          print("proxy configurado:", bool(descubrir.PROXY_URL and descubrir.PROXY_TOKEN))
+          for dom in ("paris.cl", "easy.cl"):
+              try:
+                  urls = descubrir.fichas_de(dom, tope=60)
+                  print("%-10s %d fichas" % (dom, len(urls)))
+                  for u in urls[:3]:
+                      print("     ", u[:100])
+              except Exception as e:
+                  print("%-10s ERROR %s" % (dom, str(e)[:120]))
+          PY
+
+      - name: Preguntarle a las tiendas (directo, sin proxy)
         run: |
           python - <<'PY'
           import sys
