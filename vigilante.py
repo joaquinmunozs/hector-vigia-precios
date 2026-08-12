@@ -463,6 +463,52 @@ def _ventana_rotativa(rotativa, desde, cupo_rot):
     return ventana, (desde + cupo_rot) % len(rotativa)
 
 
+# ── Salud por tienda: lo que hace falta para decidir si se sube el ritmo ───
+#
+# `RECHAZO` son los códigos con los que una tienda dice "me estás incomodando":
+# 403 (prohibido), 429 (demasiadas peticiones) y 503 (no disponible). Si estos
+# suben al subir `HECTOR_FACTOR_RITMO`, hay que bajarle el ritmo A ESA TIENDA
+# —no a todas—, que es justo lo que se hizo con spdigital.
+#
+# Un timeout o un error de parseo NO son lo mismo: significan ficha lenta o
+# rota, y se arreglan de otra forma.
+RECHAZO = (403, 429, 503, 502, 520, 521, 522, 429)
+
+_SALUD = {}
+_SALUD_LOCK = threading.Lock()
+
+
+def _clase_de_fallo(ex):
+    cod = getattr(ex, "code", None) or getattr(ex, "status_code", None)
+    if cod in RECHAZO:
+        return "rechazo"
+    if "timeout" in type(ex).__name__.lower() or "timeout" in str(ex).lower():
+        return "timeout"
+    return "otro"
+
+
+def _marca(tienda, clase):
+    with _SALUD_LOCK:
+        d = _SALUD.setdefault(tienda, {})
+        d[clase] = d.get(clase, 0) + 1
+
+
+def _resumen_salud():
+    """Tabla de salud por tienda, ordenada por la peor. Es la que se mira
+    antes de decidir si el ritmo puede subir otro escalón."""
+    filas = []
+    with _SALUD_LOCK:
+        for t, d in _SALUD.items():
+            ok = d.get("ok", 0)
+            rech = d.get("rechazo", 0)
+            tout = d.get("timeout", 0)
+            otro = d.get("otro", 0)
+            tot = ok + rech + tout + otro
+            if tot:
+                filas.append((t, ok, rech, tout, otro, 100.0 * ok / tot))
+    return sorted(filas, key=lambda f: f[5])
+
+
 def _vigilar_tienda(tienda, plan, salida, parar, progreso):
     """Recorre en bucle los productos de UNA tienda, a su ritmo seguro.
 
@@ -504,8 +550,19 @@ def _vigilar_tienda(tienda, plan, salida, parar, progreso):
             try:
                 d = _leer(tienda, url)
                 salida.put((tienda, url, d))
-            except Exception:                          # noqa: BLE001 — una
-                pass                                   # ficha caída no puede
+                _marca(tienda, "ok")
+            except Exception as ex:                    # noqa: BLE001 — una
+                # NO se traga el fallo en silencio (12-ago-2026). Antes acá
+                # había un `pass` pelado, y eso dejaba ciego justo al que
+                # decide si se puede subir el ritmo: sin saber qué tienda
+                # empieza a rebotar, "subir el factor y ver cómo responde" no
+                # se puede hacer con datos, sólo a ojo.
+                #
+                # Se separa el rechazo (403/429/503 = la tienda se está
+                # incomodando, hay que bajarle el ritmo) de los demás errores
+                # (timeout, ficha rota), porque significan cosas distintas y
+                # se corrigen distinto.
+                _marca(tienda, _clase_de_fallo(ex))
             # Ritmo constante: se descuenta lo que ya tomó la petición, así el
             # ritmo real es el pedido y no "el pedido más lo que demoró".
             resto = intervalo - (time.time() - t0)
@@ -737,6 +794,28 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
     # latencia, no en el presupuesto — y subir HECTOR_FACTOR_RITMO no ayuda.
     print("   presupuestado: %.0f req/s · real: %.1f req/s (%.0f%%)"
           % (req_s, leidos / dur, 100.0 * (leidos / dur) / max(1, req_s)))
+
+    # ── LA TABLA QUE DECIDE SI EL RITMO PUEDE SUBIR ───────────────────────
+    #
+    # Se mira `rechazo`: son los 403/429/503 con los que la tienda dice que
+    # se está incomodando. Si una tienda los tiene y las demás no, el
+    # problema es de ESA tienda y se le baja su ritmo en RITMO_SEGURO, no el
+    # factor global. Si aparecen en varias a la vez, entonces sí es el factor.
+    filas = _resumen_salud()
+    if filas:
+        print("\n   SALUD POR TIENDA (factor %.2f) — mirar la columna rechazo:"
+              % _factor_ritmo())
+        print("   %-20s %9s %9s %9s %8s" % ("tienda", "ok", "rechazo", "timeout", "% ok"))
+        for t, ok, rech, tout, otro, pct in filas:
+            aviso = "  <-- BAJARLE EL RITMO" if rech and pct < 90 else ""
+            print("   %-20s %9d %9d %9d %7.1f%%%s" % (t, ok, rech, tout, pct, aviso))
+        total_rech = sum(f[2] for f in filas)
+        if total_rech == 0:
+            print("   → cero rechazos: el ritmo se puede subir otro escalón.")
+        else:
+            malas = [f[0] for f in filas if f[2] and f[5] < 90]
+            print("   → %d rechazos en total%s" % (
+                total_rech, (" · revisar: " + ", ".join(malas[:5])) if malas else ""))
     if progreso:
         completas = sum(1 for p in progreso.values() if p.get("vueltas"))
         print("   vueltas completas: %d tienda(s) · rotación guardada para la "

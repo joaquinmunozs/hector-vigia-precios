@@ -126,6 +126,13 @@ jobs:
           # de las 44 tiendas. Si Alejandro o Max levantan la suya, cada
           # repo define aquí SU subconjunto y no se pisan (ver tiendas.py).
           HECTOR_TIENDAS: ${{ vars.HECTOR_TIENDAS }}
+          # Qué fracción del ritmo YA MEDIDO como seguro se le pide a cada
+          # tienda. Se sube de a un escalón mirando la tabla "SALUD POR
+          # TIENDA" que el vigilante imprime al cerrar: si la columna
+          # `rechazo` queda en cero, se puede subir otro escalón. Si una sola
+          # tienda rechaza, se le baja el ritmo A ELLA en RITMO_SEGURO, no
+          # este número. Vacío = 0.35 (el defecto prudente del código).
+          HECTOR_FACTOR_RITMO: ${{ vars.HECTOR_FACTOR_RITMO }}
           HECTOR_SOLO_DESCUBRIR: ${{ github.event.inputs.solo_descubrir == 'true' && '1' || '0' }}
           HECTOR_BARRIDA_COMPLETA: ${{ github.event.inputs.barrida_completa == 'true' && '1' || '0' }}
           # paris.cl y easy.cl devuelven 403 a la IP de Azure del runner y 200
