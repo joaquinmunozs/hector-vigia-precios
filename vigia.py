@@ -112,6 +112,44 @@ def leer(tienda, url):
     return extractor.extraer(_bajar(url))
 
 
+# ── TRES DESENLACES, NO DOS (12-ago-2026) ──────────────────────────────────
+#
+# Antes todo lo que no fuera 404/410 caía en "falla", y cada falla acercaba la
+# URL a que la borraran. Eso mezcla dos cosas que se corrigen al revés:
+#
+#   sin_precio -> la página se bajó bien y no traía precio. Casi siempre es una
+#                 categoría o una landing que el sitemap incluyó: basura de
+#                 verdad, y sacarla del catálogo está bien.
+#   rechazo    -> la tienda no nos dejó leer (401/403/429/5xx) o se cortó la
+#                 red. La ficha está perfecta; el que falla es el acceso.
+#                 Borrarla es perder catálogo bueno por un problema nuestro.
+#
+# No es teórico. El 11-ago el catálogo cayó de 439.375 a 360.863 fichas en un
+# día (−78.512) y el 66,7% de Falabella —la tienda que MEJOR mide, 72% de
+# cobertura— quedó a una racha de morir. Y desde el 12-ago tottus responde 403
+# a todo: con el criterio viejo, sus fichas se irían borrando solas por estar
+# bloqueadas, y al desbloquearse no habría catálogo al que volver.
+#
+# Está afuera de `barrida` para poder probarla: metida en el closure no había
+# manera de verificar el mapeo sin levantar hilos y una tienda falsa.
+RECHAZO_HTTP = (401, 403, 429, 500, 502, 503, 504)
+
+
+def desenlace(exc):
+    """Qué significa esta excepción: 'muerta', 'rechazo' o 'sin_precio'."""
+    if isinstance(exc, urllib.error.HTTPError):
+        if exc.code in (404, 410):
+            return "muerta"
+        return "rechazo" if exc.code in RECHAZO_HTTP else "sin_precio"
+    # Timeout, DNS, conexión cortada: nada de esto dice nada sobre la URL, así
+    # que no puede contar para borrarla. URLError va PRIMERO que OSError porque
+    # hereda de él, y el orden de un isinstance encadenado sí importa.
+    if isinstance(exc, (urllib.error.URLError, TimeoutError, OSError)):
+        return "rechazo"
+    # Lo que queda es el lector: no encontró precio en algo que sí se bajó.
+    return "sin_precio"
+
+
 def _plata(n):
     return "$" + format(int(n), ",d").replace(",", ".")
 
@@ -343,11 +381,8 @@ def barrida(con, avisar=True, limite=None, segundos_max=None):
             try:
                 d = leer(tienda, u)
                 resultados.put(("ok", tienda, u, d))
-            except urllib.error.HTTPError as e:
-                resultados.put(("muerta" if e.code in (404, 410) else "falla",
-                                tienda, u, None))
-            except Exception:                        # noqa: BLE001
-                resultados.put(("falla", tienda, u, None))
+            except Exception as e:                   # noqa: BLE001
+                resultados.put((desenlace(e), tienda, u, None))
             time.sleep(PAUSA * random.uniform(0.7, 1.3))
 
     # Los hilos se reparten PROPORCIONALMENTE al tamaño de cada tienda, no en
@@ -385,6 +420,11 @@ def barrida(con, avisar=True, limite=None, segundos_max=None):
 
     hallazgos, leidos, fallas, muertas, procesados = [], 0, 0, 0, 0
     descartadas = 0
+    # Los rechazos van aparte de `fallas` a propósito: no acercan la URL a que
+    # la borren, pero tienen que VERSE. Un rechazo que no se cuenta es un
+    # bloqueo que nadie descubre hasta que la tienda lleva semanas en cero.
+    rechazos = 0
+    por_tienda_rechazo = {}
     total = len(objetivos)
 
     while procesados < total:
@@ -411,9 +451,15 @@ def barrida(con, avisar=True, limite=None, segundos_max=None):
         if estado == "muerta":
             baseprecios.olvidar_url(con, url)
             muertas += 1
-        elif estado == "falla":
-            # Una URL que no da precio dos veces seguidas casi nunca es una
-            # ficha: es una categoría o una landing que el sitemap incluyó.
+        elif estado == "rechazo":
+            # La tienda no nos dejó leer. NO se anota como fallo de la URL: la
+            # ficha está bien y borrarla sería castigarla por un bloqueo o una
+            # mala tarde de la tienda. Se cuenta aparte para que se vea.
+            rechazos += 1
+            por_tienda_rechazo[tienda] = por_tienda_rechazo.get(tienda, 0) + 1
+        elif estado == "sin_precio":
+            # La página se bajó y no tenía precio. Eso sí hace sospechar de la
+            # URL: casi siempre es una categoría o una landing del sitemap.
             if baseprecios.anotar_fallo(con, url):
                 baseprecios.olvidar_url(con, url)
                 descartadas += 1
@@ -462,8 +508,20 @@ def barrida(con, avisar=True, limite=None, segundos_max=None):
 
     con.commit()
     dur = time.time() - inicio
-    print("\nleídos: %d · sin precio: %d · muertas: %d · hallazgos: %d  [%.1f min]"
-          % (leidos, fallas, muertas, len(hallazgos), dur / 60))
+    print("\nleídos: %d · sin precio: %d · rechazos: %d · muertas: %d · "
+          "hallazgos: %d  [%.1f min]"
+          % (leidos, fallas, rechazos, muertas, len(hallazgos), dur / 60))
+    if descartadas:
+        print("   descartadas del catálogo: %d (por no traer precio, no por "
+              "rechazo)" % descartadas)
+
+    # Las tiendas que más rechazan, arriba. Es la lista de a quién hay que
+    # bajarle el ritmo o pasar por el proxy — y la que avisa temprano cuando
+    # una tienda empieza a bloquearnos, en vez de enterarse por el catálogo.
+    if por_tienda_rechazo:
+        peores = sorted(por_tienda_rechazo.items(), key=lambda x: -x[1])[:5]
+        print("   rechazos por tienda: %s"
+              % " · ".join("%s %d" % (t, n) for t, n in peores))
 
     errores = [h for h in hallazgos if h["tipo"] == baseprecios.ERROR]
     ofertas = [h for h in hallazgos if h["tipo"] == baseprecios.OFERTA]

@@ -100,13 +100,17 @@ VENTANA_REPETIR = 12 * 3600
 # cobertura. Una tienda que mide bien no tiene dos tercios de fichas basura:
 # lo que fallaba era la lectura, no la URL.
 #
-# El problema de fondo es que acá se mezclan dos cosas distintas: una URL de
-# sitemap que nunca fue una ficha (basura de verdad, hay que borrarla) y una
-# lectura que falló por timeout, bloqueo o falta de adaptador (la ficha está
-# bien, el que falla es el lector). Un 404/410 ya se trata aparte como
-# "muerta"; todo lo demás cae acá junto. Mientras esa distinción no exista,
-# 6 rachas seguidas —seis barridas, seis días— es el margen para no perder
-# catálogo por una mala tarde de una tienda.
+# ✅ RESUELTO el 12-ago-2026: la distinción ya existe (`vigia.desenlace`).
+#
+# Acá se mezclaban dos cosas distintas: una URL de sitemap que nunca fue ficha
+# (basura, hay que borrarla) y una lectura que falló por bloqueo o timeout (la
+# ficha está bien, el que falla es el acceso). Ahora sólo llega a `fallos` el
+# primer caso: los rechazos se cuentan aparte y NO acercan la URL a que la
+# borren. Un 404/410 sigue tratándose como "muerta".
+#
+# El 6 se deja como está aunque ya no sea imprescindible. Bajarlo a 2 volvería
+# a hacer que dos lecturas raras seguidas borren una ficha buena, y el margen
+# no cuesta nada: son fichas que igual no dan precio.
 TOPE_FALLOS = 6
 
 ERROR = "error"
