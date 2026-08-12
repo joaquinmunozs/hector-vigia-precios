@@ -169,6 +169,51 @@ VENTANA_OFERTAS_SEG = 600.0   # 10 minutos
 
 PAUSA_ENTRE_VUELTAS = 0.0      # sin respiro: la vuelta ya está limitada por ritmo
 
+# ── FRECUENCIA ADAPTATIVA: no todo merece la misma atención (12-ago-2026) ──
+#
+# Medido sobre la base de producción: de 175.212 fichas con precio conocido,
+# **173.410 (99,0%) nunca han cambiado de precio**. Solo 1.802 se movieron
+# alguna vez, y están concentradas: Falabella 1.250, Santa Isabel 310,
+# Hites 144.
+#
+# Con una cola uniforme, el 99% del presupuesto se gasta releyendo productos
+# quietos para encontrar el 1% que se mueve. Repartir por volatilidad no pide
+# ni una petición más: cambia a QUIÉN se le dan.
+#
+# LA TRAMPA, Y POR QUÉ HAY TRES NIVELES Y NO DOS
+# --------------------------------------------------------------------------
+# El historial tiene 1,1 días. Una ficha "que nunca cambió" puede ser una que
+# de verdad no se mueve, o una que simplemente no ha tenido tiempo de
+# moverse — y con dos niveles las dos caen en el mismo saco. Mandar al
+# congelador un producto del que todavía no se sabe nada es exactamente el
+# error que haría perder el primer error de precio de una ficha nueva.
+#
+# Por eso quien tiene poco historial NO es frío, es DESCONOCIDO, y se lee a
+# frecuencia media hasta que se sepa qué es. El sistema se afina solo con los
+# días: cada ficha se va mudando de nivel según lo que demuestre.
+#
+#   🔥 MOVIL       ya cambió de precio al menos una vez
+#   ❓ DESCONOCIDO menos de MIN_PARA_ENFRIAR lecturas: aún no se sabe
+#   🧊 QUIETO      suficientes lecturas y siempre el mismo precio
+#
+# NADA SALE DE LA LISTA. Los tres niveles se siguen leyendo enteros; lo único
+# que cambia es cada cuánto le toca a cada uno.
+REPARTO_ROTATIVA = {"movil": 0.40, "desconocido": 0.45, "quieto": 0.15}
+
+# Cuántas lecturas hacen falta para creerle a un "nunca cambió". Por debajo de
+# esto la ficha es DESCONOCIDA, no quieta. Mismo criterio que
+# `baseprecios.MIN_OBSERVACIONES` usa para creerle a una mediana.
+MIN_PARA_ENFRIAR = 5
+
+
+def _nivel(distintos, lecturas):
+    """En qué nivel de frecuencia cae una ficha."""
+    if distintos > 1:
+        return "movil"
+    if lecturas < MIN_PARA_ENFRIAR:
+        return "desconocido"
+    return "quieto"
+
 
 # ── EL CUELLO DE BOTELLA QUE ESTUVO TAPADO HASTA EL 12-AGO-2026 ────────────
 #
@@ -295,7 +340,9 @@ def cargar_lista(con, vuelta=VUELTA_OBJETIVO):
     Devuelve {tienda: {"fija": [...], "rotativa": [...], "cupo_rot": N}}.
     """
     filas = con.execute("""
-        SELECT tienda, url, nombre, MAX(precio) AS precio
+        SELECT tienda, url, nombre, MAX(precio) AS precio,
+               COUNT(DISTINCT precio) AS distintos,
+               COUNT(*)               AS lecturas
         FROM precios
         WHERE precio > 0
         GROUP BY url
@@ -325,11 +372,14 @@ def cargar_lista(con, vuelta=VUELTA_OBJETIVO):
     # ordenado por precio (los más caros primero — mismo criterio que la
     # fija), sin los que ya están fijos. No hace falta un piso de precio: el
     # orden y el tope ya priorizan solos lo que vale la pena vigilar.
+    # Cada tienda tiene TRES colas, una por nivel de frecuencia (ver
+    # REPARTO_ROTATIVA arriba). Dentro de cada una sigue mandando el precio.
     resto_por_tienda = {}
     for f in filas:
         if f["url"] in fija_urls:
             continue
-        resto_por_tienda.setdefault(f["tienda"], []).append(
+        niv = _nivel(f["distintos"], f["lecturas"])
+        resto_por_tienda.setdefault(f["tienda"], {}).setdefault(niv, []).append(
             (f["url"], f["nombre"], f["precio"] or 0))
 
     # Dónde quedó la rotación de ofertas de cada tienda en la corrida anterior.
@@ -356,12 +406,24 @@ def cargar_lista(con, vuelta=VUELTA_OBJETIVO):
         # CONSECUENCIA MEDIDA, no un recorte: la vuelta tarda lo que tarde y
         # el log lo informa. Es el cambio que hace que "todas las ofertas, de
         # todas las tiendas" sea cierto en vez de aspiracional.
-        candidatas = sorted(resto_por_tienda.get(t, []), key=lambda x: -x[2])
+        colas = resto_por_tienda.get(t, {})
+        rotativas, cupos, desdes = {}, {}, {}
+        # El cupo se reparte entre los niveles que EXISTEN en esta tienda. Si
+        # una no tiene móviles todavía (la mayoría al principio), su 40% se
+        # reparte entre los otros dos en vez de perderse.
+        presentes = {k: v for k, v in REPARTO_ROTATIVA.items() if colas.get(k)}
+        suma = sum(presentes.values()) or 1.0
+        for niv, peso in presentes.items():
+            rotativas[niv] = sorted(colas[niv], key=lambda x: -x[2])
+            cupos[niv] = max(1, int(cupo_rot * peso / suma))
+            desdes[niv] = marcas.get(niv + "|" + t, 0) % max(1, len(rotativas[niv]))
+
         plan[t] = {
             "fija": fija_por_tienda.get(t, []),
-            "rotativa": candidatas,
+            "rotativas": rotativas,
+            "cupos": cupos,
+            "desdes": desdes,
             "cupo_rot": cupo_rot,
-            "desde": marcas.get(t, 0) % max(1, len(candidatas)),
         }
     return plan
 
@@ -371,19 +433,20 @@ def _marcas_rotacion(con):
     anterior. Vive en la misma tabla `marcadores` que usa `vigia.py`."""
     con.execute("CREATE TABLE IF NOT EXISTS marcadores ("
                 "clave TEXT PRIMARY KEY, valor INTEGER NOT NULL)")
+    # La clave es `rot_<nivel>|<tienda>`: una rotación por cola, porque cada
+    # nivel avanza a su propio ritmo y compartir un marcador los descuadraría.
     return {f["clave"][4:]: f["valor"] for f in con.execute(
         "SELECT clave, valor FROM marcadores WHERE clave LIKE 'rot_%'")}
 
 
 def _guardar_marcas(con, progreso):
-    """Anota dónde quedó cada tienda, para que la próxima corrida siga ahí."""
+    """Anota dónde quedó cada cola, para que la próxima corrida siga ahí."""
     for tienda, p in progreso.items():
-        if "desde" not in p:
-            continue
-        con.execute(
-            "INSERT INTO marcadores (clave, valor) VALUES (?,?) "
-            "ON CONFLICT(clave) DO UPDATE SET valor=excluded.valor",
-            ("rot_" + tienda, int(p["desde"])))
+        for niv, desde in (p.get("desdes") or {}).items():
+            con.execute(
+                "INSERT INTO marcadores (clave, valor) VALUES (?,?) "
+                "ON CONFLICT(clave) DO UPDATE SET valor=excluded.valor",
+                ("rot_" + niv + "|" + tienda, int(desde)))
     con.commit()
 
 
@@ -422,8 +485,8 @@ def _vigilar_tienda(tienda, plan, salida, parar, progreso):
     no se pide más.
     """
     fija = plan["fija"]
-    rotativa = plan["rotativa"]
-    cupo_rot = plan["cupo_rot"]
+    rotativas = plan["rotativas"]
+    cupos = plan["cupos"]
     n = _hilos_para(tienda)
     intervalo = n / max(0.01, _ritmo(tienda))
     # Retoma donde quedó la corrida ANTERIOR, no en cero. Con vueltas de
@@ -431,7 +494,7 @@ def _vigilar_tienda(tienda, plan, salida, parar, progreso):
     # significaba releer eternamente la cabeza de la lista y no llegar nunca
     # a la cola — el mismo modo de falla silencioso que la rotación de
     # `vigia.py` ya tenía resuelto con su marcador.
-    desde = plan.get("desde", 0)
+    desdes = dict(plan.get("desdes") or {})
 
     def _tanda(urls):
         for url in urls:
@@ -451,7 +514,16 @@ def _vigilar_tienda(tienda, plan, salida, parar, progreso):
 
     while not parar.is_set():
         t_vuelta = time.time()
-        ventana, desde = _ventana_rotativa(rotativa, desde, cupo_rot)
+        # Cada vuelta lleva la lista fija entera + una tajada de CADA nivel de
+        # frecuencia. Los tres avanzan en paralelo con su propio marcador, así
+        # que un nivel chico (los móviles) da muchas vueltas completas por cada
+        # una que da un nivel grande (los quietos) — que es exactamente el
+        # efecto buscado, y sale solo del tamaño de cada cola.
+        ventana = []
+        for niv, lista in rotativas.items():
+            tajada, desdes[niv] = _ventana_rotativa(
+                lista, desdes.get(niv, 0), cupos.get(niv, 0))
+            ventana += tajada
         objetivos = [u for u, _n, _p in fija + ventana]
         if not objetivos:
             return
@@ -466,7 +538,7 @@ def _vigilar_tienda(tienda, plan, salida, parar, progreso):
         # media vuelta, la próxima la repite entera en vez de saltarse el
         # trozo que quedó sin leer.
         p = progreso.setdefault(tienda, {})
-        p["desde"] = desde
+        p["desdes"] = dict(desdes)
         p["vueltas"] = p.get("vueltas", 0) + 1
         p["seg_vuelta"] = time.time() - t_vuelta
         p["por_vuelta"] = len(objetivos)
@@ -480,31 +552,47 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
               "que haya precios conocidos:  python vigia.py --limite 2000")
         return 0
 
+    def _tam(p, niv):
+        return len(p["rotativas"].get(niv, ()))
+
     total_fija = sum(len(p["fija"]) for p in plan.values())
-    total_rot = sum(len(p["rotativa"]) for p in plan.values())
-    print("🔥 Errores: %d productos fijos · 🔁 Ofertas: %d en rotación · %d tiendas\n"
+    total_rot = sum(sum(len(l) for l in p["rotativas"].values())
+                    for p in plan.values())
+    print("🔥 Errores: %d productos fijos · 🔁 Ofertas: %d en rotación · %d tiendas"
           % (total_fija, total_rot, len(plan)))
-    ciclo_ofertas = {}
+    for niv in ("movil", "desconocido", "quieto"):
+        tot = sum(_tam(p, niv) for p in plan.values())
+        print("     %-12s %8d fichas (%.0f%% del cupo rotativo)"
+              % (niv, tot, REPARTO_ROTATIVA[niv] * 100))
+    print()
+
+    # Cuánto tarda CADA nivel en dar una vuelta completa. Es la cifra que
+    # importa ahora: el promedio del catálogo ya no dice nada útil cuando los
+    # niveles van a ritmos distintos a propósito.
+    ciclo = {niv: {} for niv in REPARTO_ROTATIVA}
     for t, p in sorted(plan.items(), key=lambda x: -len(x[1]["fija"])):
         vuelta = (len(p["fija"]) + p["cupo_rot"]) / _ritmo(t)
-        vueltas_rot = len(p["rotativa"]) / max(1, p["cupo_rot"])
-        ciclo_ofertas[t] = vueltas_rot * vuelta
-        print("   %-18s %4d fijos + %4d rotativos (de %6d) · %.1f req/s "
-              "(%d hilos) · vuelta ~%.0f seg · catálogo completo cada ~%.0f min"
-              % (t, len(p["fija"]), p["cupo_rot"], len(p["rotativa"]), _ritmo(t),
-                 _hilos_para(t), vuelta, ciclo_ofertas[t] / 60))
+        detalle = []
+        for niv, lista in p["rotativas"].items():
+            cu = max(1, p["cupos"].get(niv, 1))
+            ciclo[niv][t] = (len(lista) / cu) * vuelta
+            detalle.append("%s %d/%d" % (niv[:4], cu, len(lista)))
+        print("   %-18s %4d fijos · %.1f req/s (%d hilos) · vuelta ~%.0f seg · %s"
+              % (t, len(p["fija"]), _ritmo(t), _hilos_para(t), vuelta,
+                 " · ".join(detalle)))
 
     peor_error = max((len(p["fija"]) + p["cupo_rot"]) / _ritmo(t) for t, p in plan.items())
-    peor_oferta = max(ciclo_ofertas.values()) if ciclo_ofertas else 0
-    lento = max(ciclo_ofertas, key=ciclo_ofertas.get) if ciclo_ofertas else "-"
     req_s = sum(_ritmo(t) for t in plan)
     print("\n   → %d hilos · %.0f req/s en total (factor %.2f del ritmo medido)"
           % (sum(_hilos_para(t) for t in plan), req_s, _factor_ritmo()))
     print("   → errores: detección hasta %.0f segundos" % peor_error)
-    # Ya no es la ventana fija de antes: es lo que de verdad tarda la tienda
-    # más lenta en dar una vuelta a TODO su catálogo, sin recortar nada.
-    print("   → ofertas: catálogo completo cada %.0f min (la más lenta: %s)\n"
-          % (peor_oferta / 60, lento))
+    for niv in ("movil", "desconocido", "quieto"):
+        if ciclo[niv]:
+            peor = max(ciclo[niv].values())
+            lento = max(ciclo[niv], key=ciclo[niv].get)
+            print("   → %-12s vuelta completa cada %6.1f min (la más lenta: %s)"
+                  % (niv, peor / 60, lento))
+    print()
 
     salida = queue.Queue()
     parar = threading.Event()
@@ -522,7 +610,8 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
     # el mínimo, o `--ciclos` nunca corta porque cuenta peticiones que jamás
     # van a pasar. Solo se usa para `--ciclos` en las pruebas — el corte real
     # en producción es `segundos_max`, no un conteo de peticiones.
-    total = sum(len(p["fija"]) + min(p["cupo_rot"], len(p["rotativa"]))
+    total = sum(len(p["fija"]) + sum(min(p["cupos"].get(niv, 0), len(l))
+                                     for niv, l in p["rotativas"].items())
                 for p in plan.values())
     leidos, hallazgos, inicio = 0, 0, time.time()
     ultimo_precio = {}
