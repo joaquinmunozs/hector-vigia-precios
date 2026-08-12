@@ -16,7 +16,17 @@
 // Dos cerrojos:
 //   1. token compartido en la cabecera `x-hector-token` (secreto de Cloudflare)
 //   2. lista blanca de dominios — solo las tiendas que de verdad están bloqueadas
-const PERMITIDOS = new Set(["paris.cl", "www.paris.cl", "easy.cl", "www.easy.cl"]);
+//
+// tottus.cl se agrega el 12-ago-2026. Venía dando 0,1% de éxito en producción
+// (84 lecturas buenas contra 96.120 rechazos) y se leía como exceso de ritmo.
+// No lo era: la sonda 31623034286 leyó 10 fichas DE A UNA, con 1,2 s entre
+// medio, desde el runner (172.203.7.56) → 403 en las 10. Es bloqueo por IP,
+// igual que paris y easy, y bajarle el ritmo no habría cambiado nada.
+const PERMITIDOS = new Set([
+  "paris.cl", "www.paris.cl",
+  "easy.cl", "www.easy.cl",
+  "tottus.cl", "www.tottus.cl",
+]);
 
 export default {
   async fetch(request, env) {

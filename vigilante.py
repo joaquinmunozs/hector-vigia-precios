@@ -98,7 +98,20 @@ RITMO_SEGURO = {
     "falabella.com": 105.0,
     "construmart.cl": 49.0,
     "antartica.cl": 47.5,
-    "puma.cl": 46.0,
+    # puma BAJADA de 46.0 a 5.0 el 12-ago-2026. En la corrida 31600451844 dio
+    # 686 lecturas buenas contra 45.649 rechazos (1,5%), corriendo a 46 × 0,35
+    # = 16,1 req/s. La sonda 31623034286 leyó 10 fichas de a una desde el
+    # runner: 200 en las 10. O sea NO nos bloquea — se ahoga con el volumen
+    # sostenido, igual que spdigital (§6 de la bitácora del 11-ago).
+    #
+    # Por qué la medición decía 46 y la realidad dice que no: `medir_limites`
+    # mide en RÁFAGAS CORTAS contra UNA sola URL. Eso captura el límite
+    # instantáneo, no el de 3,4 h seguidas. Es el mismo desfase que tricot pero
+    # al revés: tricot mide mal y anda bien; puma mide bien y anda mal.
+    #
+    # Queda en el conservador 5.0 (→ 1,75 req/s con el factor actual). Subirlo
+    # exige medir SOSTENIDO, no en ráfaga.
+    "puma.cl": 5.0,
     "rosen.cl": 40.5,
     "doite.cl": 29.0,
     "farmaciasahumada.cl": 27.5,
@@ -130,7 +143,25 @@ RITMO_SEGURO = {
     #
     # Se queda en el `_por_defecto` de 5.0, que es conservador y funciona.
     # Subirlo requiere medirlo con fichas rotativas, no con una sola.
-    "tottus.cl": 49.0,
+    # tottus BAJADA de 49.0 a 3.0 el 12-ago-2026, y el motivo NO es tottus.
+    #
+    # Desde el 12-ago va por el Worker de Cloudflare (`proxy-tiendas/`) porque
+    # nos bloquea por IP: la sonda 31623034286 leyó 10 fichas de a una, con
+    # 1,2 s entre medio, y dio 403 en las 10. Ese era el origen de sus 96.120
+    # rechazos, no el ritmo.
+    #
+    # Pero al pasar por el proxy el techo deja de ser "cuánto aguanta tottus"
+    # y pasa a ser LA CUOTA DEL WORKER: 100.000 peticiones/día en el plan
+    # gratis. A 49 × 0,35 = 17 req/s durante 3,4 h serían ~208.000 peticiones
+    # en UNA corrida, y hay 4 corridas al día. Se pagaría por un descuido de
+    # configuración, no por una decisión.
+    #
+    #   3.0 × 0,35 = 1,05 req/s → ~12.900 por corrida → ~51.500/día
+    #
+    # Eso deja la mitad de la cuota libre para paris y easy. Si algún día se
+    # paga el plan de $5/mes, este número se puede subir; mientras tanto es el
+    # presupuesto el que manda, no la tienda.
+    "tottus.cl": 3.0,
     "adidas.cl": 40.0,
     "paris.cl": 16.0,
     # spdigital se queda bajo a propósito: no es que no se pueda leer (18 de

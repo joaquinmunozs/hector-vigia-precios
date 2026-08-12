@@ -39,7 +39,18 @@ TIEMPO_LIMITE = 25
 # Sin `HECTOR_PROXY_URL` en el entorno, esto no hace NADA y todo sigue como
 # antes: en local, desde la casa de Joaquín, esas tiendas responden bien
 # directo y no hay por qué gastar peticiones del Worker.
-POR_PROXY = {"paris.cl", "www.paris.cl", "easy.cl", "www.easy.cl"}
+#
+# tottus.cl entra el 12-ago-2026 por la misma razón, pero se descubrió por otro
+# camino: no daba 0 fichas, daba 0,1% de éxito (84 buenas contra 96.120
+# rechazos), y eso se leía como "le estamos pegando muy rápido". La sonda
+# 31623034286 lo desmintió: 10 fichas leídas DE A UNA, con 1,2 s entre medio,
+# dieron 403 las 10. Es la IP, no el ritmo.
+#
+# OJO: esto también cubre al VIGILANTE, no solo al descubrimiento — lee por
+# `bajar()`, que es donde se aplica `_por_proxy`. Ahí es donde estaban los
+# 96.120 rechazos.
+POR_PROXY = {"paris.cl", "www.paris.cl", "easy.cl", "www.easy.cl",
+             "tottus.cl", "www.tottus.cl"}
 PROXY_URL = os.environ.get("HECTOR_PROXY_URL", "").strip()
 PROXY_TOKEN = os.environ.get("HECTOR_PROXY_TOKEN", "").strip()
 
