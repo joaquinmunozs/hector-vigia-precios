@@ -41,6 +41,9 @@ import baseprecios
 import descubrir
 import extractor
 import tiendas as cat_tiendas
+# Solo por `_hilos_para` y la tabla de ritmos seguros. No hay ciclo:
+# `vigilante` no importa `vigia`.
+import vigilante
 
 # Tope de conexiones simultáneas contra UNA misma tienda.
 #
@@ -328,6 +331,22 @@ def barrida(con, avisar=True, limite=None, segundos_max=None):
         cuota = len(urls) / max(1, total_urls)
         n = int(HILOS_TOTAL * cuota)
         n = max(1, min(HILOS_POR_TIENDA, n))
+        # ── El reparto también respeta el RITMO SEGURO de cada tienda ──────
+        #
+        # Repartir solo por TAMAÑO es lo que rompía spdigital: con 64.903
+        # fichas se llevaba ~35 hilos por ser grande, sin mirar que su ritmo
+        # medido es de los más bajos. Resultado: 51.876 URLs en `fallos` y
+        # 799 medidas (1,2%).
+        #
+        # Verificado el 12-ago-2026: 20 de esas URLs "fallidas", leídas de a
+        # una y con 1,2 s entre medio, dieron 18 buenas. Las 2 restantes eran
+        # `/categories/`, que no son fichas. O sea las páginas se leen bien y
+        # lo que fallaba era la CARGA, no el extractor (que era la hipótesis
+        # del CONTEXTO) ni la falta de turno.
+        #
+        # `vigilante._hilos_para` ya sabe cuántos hilos sostienen el ritmo
+        # seguro de cada tienda; se reusa en vez de duplicar la tabla.
+        n = max(1, min(n, vigilante._hilos_para(tienda)))
         for i in range(n):
             h = threading.Thread(target=trabajar, args=(tienda, urls[i::n]), daemon=True)
             h.start()

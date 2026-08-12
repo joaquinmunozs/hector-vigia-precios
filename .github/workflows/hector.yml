@@ -2,10 +2,26 @@ name: Héctor — vigía de precios
 
 # El cron de GitHub NO tiene SLA: retrasos de 5 a 30 min son normales, y en
 # horas de carga alta puede irse a 60 o saltarse una corrida. Para un ciclo de
-# 4 h eso es tolerable, así que no vale la pena montar un disparador externo.
+# 6 h eso es tolerable, así que no vale la pena montar un disparador externo.
+#
+# ── POR QUÉ 6 h Y NO 4 (12-ago-2026) ──────────────────────────────────────
+#
+# Con cron de 4 h y corridas de ~3,5 h no quedaba margen para la cola, y
+# GitHub sólo mantiene UNA corrida pendiente por grupo de concurrencia: la
+# siguiente desplaza a la que esperaba. Resultado medido sobre las últimas 23
+# corridas: **12 canceladas**, 10 exitosas, 1 fallida. Las canceladas
+# vivieron entre 2 y 9 h encoladas antes de morir sin ejecutar nada.
+#
+# Se perdía más de la mitad de las corridas, y eso le pega directo al
+# vigilante, que es el pilar del producto: cada cancelación son 3,4 h sin
+# nadie mirando los precios.
+#
+# 6 h contra corridas de 3,5 h deja 2,5 h de margen real. Menos corridas
+# programadas, pero todas se ejecutan — que es estrictamente mejor que el
+# doble de corridas de las que la mitad no corre.
 on:
   schedule:
-    - cron: "0 */4 * * *"
+    - cron: "0 */6 * * *"
   workflow_dispatch:        # para poder correrlo a mano desde la web
     inputs:
       solo_descubrir:
@@ -115,10 +131,22 @@ jobs:
           HECTOR_PROXY_TOKEN: ${{ secrets.HECTOR_PROXY_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           VIGIA_CHAT_ID: ${{ secrets.VIGIA_CHAT_ID }}
-          VIGIA_TOPICO_ERRORES: ${{ secrets.VIGIA_TOPICO_ERRORES }}
-          VIGIA_TOPICO_OFERTAS: ${{ secrets.VIGIA_TOPICO_OFERTAS }}
-          VIGIA_TOPICO_ELECTRONICOS: ${{ secrets.VIGIA_TOPICO_ELECTRONICOS }}
-          VIGIA_TOPICO_HOGAR: ${{ secrets.VIGIA_TOPICO_HOGAR }}
+          # Los tópicos van como `vars`, NO como `secrets` (12-ago-2026).
+          #
+          # Un ID de tópico no es secreto, y guardarlos como secret tenía un
+          # costo alto y no obvio: GitHub censura del log CUALQUIER cadena que
+          # coincida con un secreto. Con `VIGIA_TOPICO_ERRORES=2` y
+          # `=4`, cada dígito 2 y 4 de TODO el log se volvía `***`:
+          #
+          #   estado inicial: ***0.863 vigilados · 175.***1*** con precio
+          #
+          # Toda la telemetría quedaba ilegible, que es probablemente por qué
+          # tardaron en verse el vigilante corriendo al 4% y las corridas
+          # canceladas. Como `vars` los valores se imprimen tal cual.
+          VIGIA_TOPICO_ERRORES: ${{ vars.VIGIA_TOPICO_ERRORES }}
+          VIGIA_TOPICO_OFERTAS: ${{ vars.VIGIA_TOPICO_OFERTAS }}
+          VIGIA_TOPICO_ELECTRONICOS: ${{ vars.VIGIA_TOPICO_ELECTRONICOS }}
+          VIGIA_TOPICO_HOGAR: ${{ vars.VIGIA_TOPICO_HOGAR }}
         run: python -u correr.py
 
       # `if: always()` es clave: si la barrida se cae a la mitad, igual hay que
