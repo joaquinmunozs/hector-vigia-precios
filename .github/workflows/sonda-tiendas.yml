@@ -62,6 +62,8 @@ jobs:
       - name: Leer fichas de a una (¿bloqueo o carga?)
         env:
           DOMINIOS: ${{ inputs.dominios }}
+          HECTOR_PROXY_URL: https://hector-proxy-tiendas.contacto-e95.workers.dev
+          HECTOR_PROXY_TOKEN: ${{ secrets.HECTOR_PROXY_TOKEN }}
         run: |
           python - <<'PY'
           import os
@@ -95,29 +97,65 @@ jobs:
                   print()
                   continue
 
-              codigos = {}
+              # Se miden LOS DOS CAMINOS a propósito:
+              #
+              #   directo -> `cffi.get`, que es lo que ve la tienda desde la
+              #              IP del runner
+              #   real    -> `descubrir.bajar`, que es POR DONDE SALEN todas
+              #              las peticiones de Héctor y donde se aplica el
+              #              proxy si la tienda está en POR_PROXY
+              #
+              # Medir solo el directo fue un error el 12-ago: daba 403 para
+              # tottus incluso ya estando el proxy puesto, porque el proxy no
+              # participaba de la prueba. Una sonda que no usa el camino real
+              # no prueba nada.
+              via_proxy = getattr(descubrir, "_por_proxy", None)
+              usa_proxy = False
+              if via_proxy:
+                  destino, _ = via_proxy(muestra[0])
+                  usa_proxy = destino != muestra[0]
+              print("  ¿esta tienda va por el proxy?: %s\n"
+                    % ("SÍ" if usa_proxy else "no"))
+
+              directo, real = {}, {"ok": 0, "falla": 0}
               for u in muestra:
                   try:
                       r = cffi.get(u, impersonate="chrome", timeout=30,
                                    headers={"Accept-Language": "es-CL,es;q=0.9"})
-                      codigos[r.status_code] = codigos.get(r.status_code, 0) + 1
-                      print("    HTTP %-4s %6d KB  %s"
-                            % (r.status_code, len(r.content or b"") // 1024,
-                               u[:78]))
+                      directo[r.status_code] = directo.get(r.status_code, 0) + 1
+                      cod = str(r.status_code)
                   except Exception as e:
-                      codigos["ERR"] = codigos.get("ERR", 0) + 1
-                      print("    ERROR %-38s %s" % (str(e)[:38], u[:60]))
+                      directo["ERR"] = directo.get("ERR", 0) + 1
+                      cod = "ERR"
+
+                  # El camino real. Se mira el TAMAÑO además del éxito: una
+                  # página de bloqueo también devuelve 200 y pesa 6 KB.
+                  try:
+                      html = descubrir.bajar(u, tiempo=30) or ""
+                      bien = len(html) > 20000
+                      real["ok" if bien else "falla"] += 1
+                      marca = "%6d KB %s" % (len(html) // 1024,
+                                             "OK" if bien else "flaca")
+                  except Exception as e:
+                      real["falla"] += 1
+                      marca = "ERROR %s" % str(e)[:30]
+
+                  print("    directo:%-5s  real:%-18s %s" % (cod, marca, u[:52]))
                   time.sleep(1.2)   # de a una y sin apuro: ese es el punto
 
-              ok = codigos.get(200, 0)
-              print("\n  resumen: %s" % codigos)
-              if ok == len(muestra):
-                  print("  → LEE PERFECTO de a una. El problema es el RITMO, "
-                        "no un bloqueo:\n    bajar su valor en RITMO_SEGURO.\n")
-              elif ok == 0:
-                  print("  → NO lee ni de a una. Es BLOQUEO: bajar el ritmo no "
-                        "sirve,\n    hay que pasarla por el proxy.\n")
+              print("\n  directo: %s" % directo)
+              print("  por el camino real: %s" % real)
+              if real["ok"] == len(muestra):
+                  if usa_proxy:
+                      print("  → EL PROXY LO RESUELVE. Queda vigilada.\n")
+                  else:
+                      print("  → LEE PERFECTO de a una y sin proxy. El problema "
+                            "es el RITMO:\n    bajar su valor en RITMO_SEGURO.\n")
+              elif real["ok"] == 0:
+                  print("  → NO lee ni de a una por el camino real. Si ya va "
+                        "por el proxy,\n    el proxy no alcanza para esta "
+                        "tienda.\n")
               else:
-                  print("  → mixto (%d/%d): mirar los códigos de arriba.\n"
-                        % (ok, len(muestra)))
+                  print("  → mixto (%d/%d): mirar la columna real.\n"
+                        % (real["ok"], len(muestra)))
           PY
