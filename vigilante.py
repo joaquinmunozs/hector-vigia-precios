@@ -249,6 +249,41 @@ LATENCIA_TIPICA = 0.9
 # ninguna se quejara; 90 deja margen bajo eso.
 TOPE_HILOS_TIENDA = 90
 
+# ── EL TOPE QUE FALTABA: EL RUNNER, NO LAS TIENDAS (12-ago-2026) ───────────
+#
+# El cambio de "un hilo por tienda" a "los hilos que aguante cada tienda"
+# arregló el diseño pero se pasó de rosca con el hardware. Medido en la
+# corrida 31559797454, contra la 31515035162 de la noche anterior:
+#
+#                     ANTES        DESPUÉS     resultado
+#   vigilante hilos      21            216
+#   vigilante req/s    24,4          0,126     194x PEOR
+#   barrida hilos        60            106
+#   barrida req/s      12,7           1,63     7,8x PEOR
+#   hilos TOTALES        81            322
+#
+# La prueba de que es el runner y no las tiendas: **la barrida cayó 7,8x sin
+# que su lógica de concurrencia cambiara**, sólo por correr al lado de un
+# vigilante con 216 hilos. Un `ubuntu-latest` son 2-4 vCPU, y 322 hilos de
+# Python compitiendo por el GIL pasan más tiempo en cambios de contexto que
+# leyendo respuestas.
+#
+# O sea: hay DOS techos, y hasta ahora sólo se respetaba uno.
+#   · el de cada tienda  -> RITMO_SEGURO (cuánto aguanta ella)
+#   · el de la máquina   -> este (cuántos hilos puede atender el runner)
+#
+# El vigilante corre EN PARALELO con la barrida, así que este presupuesto es
+# sólo su mitad. El sistema andaba sano con 21 + 60 = 81 hilos; 60 acá deja
+# margen y sigue siendo casi el triple de lo que había.
+#
+# Es la pared que la investigación de asyncio ya anticipaba: con hilos no se
+# puede pasar de acá. Subirlo sin migrar a asyncio vuelve a romperlo.
+def _tope_hilos_total():
+    try:
+        return max(4, int(os.environ.get("HECTOR_TOPE_HILOS", "60")))
+    except ValueError:
+        return 60
+
 # ── La rampa, y por qué no se salta directo al ritmo completo ──────────────
 #
 # Los ritmos de `RITMO_SEGURO` se midieron en RÁFAGAS CORTAS con
@@ -284,7 +319,8 @@ def _ritmo(tienda):
 
 
 def _hilos_para(tienda):
-    """Cuántos hilos sostienen el ritmo de esta tienda.
+    """Cuántos hilos sostienen el ritmo de esta tienda, mirando SOLO a la
+    tienda. Es el ideal; el reparto real lo recorta `_reparto_hilos`.
 
     Un hilo entrega 1/LATENCIA_TIPICA req/s, así que para `r` req/s hacen
     falta `r × LATENCIA_TIPICA` hilos. Es la línea que faltaba: sin ella el
@@ -293,6 +329,24 @@ def _hilos_para(tienda):
     """
     return max(1, min(TOPE_HILOS_TIENDA,
                       int(math.ceil(_ritmo(tienda) * LATENCIA_TIPICA))))
+
+
+def _reparto_hilos(tiendas):
+    """Reparte el presupuesto de hilos del runner entre las tiendas.
+
+    Si lo que pide cada tienda cabe en el tope, se le da lo que pide. Si no,
+    se escala TODO proporcionalmente: la tienda que más aguanta sigue
+    llevándose la mayor tajada, pero nadie se pasa del presupuesto de la
+    máquina. Sin este reparto, 21 tiendas pidiendo su ideal sumaban 216 hilos
+    y hundían el runner (ver `_tope_hilos_total`).
+    """
+    ideal = {t: _hilos_para(t) for t in tiendas}
+    total = sum(ideal.values()) or 1
+    tope = _tope_hilos_total()
+    if total <= tope:
+        return ideal
+    escala = tope / float(total)
+    return {t: max(1, int(n * escala)) for t, n in ideal.items()}
 
 
 # Una ficha que no contesta en 8 s no va a contestar: la latencia normal es
@@ -386,6 +440,7 @@ def cargar_lista(con, vuelta=VUELTA_OBJETIVO):
     # Se lee acá, en el hilo que tiene la conexión: los hilos de tienda no
     # pueden tocar sqlite (ver el docstring de correr.py).
     marcas = _marcas_rotacion(con)
+    hilos = _reparto_hilos(set(fija_por_tienda) | set(resto_por_tienda))
 
     plan = {}
     for t in set(fija_por_tienda) | set(resto_por_tienda):
@@ -424,6 +479,7 @@ def cargar_lista(con, vuelta=VUELTA_OBJETIVO):
             "cupos": cupos,
             "desdes": desdes,
             "cupo_rot": cupo_rot,
+            "hilos": hilos.get(t, 1),
         }
     return plan
 
@@ -533,7 +589,9 @@ def _vigilar_tienda(tienda, plan, salida, parar, progreso):
     fija = plan["fija"]
     rotativas = plan["rotativas"]
     cupos = plan["cupos"]
-    n = _hilos_para(tienda)
+    # Los hilos ya vienen repartidos contra el presupuesto del runner, no es
+    # lo que esta tienda pediría por su cuenta (ver `_reparto_hilos`).
+    n = plan.get("hilos") or _hilos_para(tienda)
     intervalo = n / max(0.01, _ritmo(tienda))
     # Retoma donde quedó la corrida ANTERIOR, no en cero. Con vueltas de
     # ofertas que duran más que una corrida de 3,4 h, arrancar siempre en 0
@@ -635,13 +693,16 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
             ciclo[niv][t] = (len(lista) / cu) * vuelta
             detalle.append("%s %d/%d" % (niv[:4], cu, len(lista)))
         print("   %-18s %4d fijos · %.1f req/s (%d hilos) · vuelta ~%.0f seg · %s"
-              % (t, len(p["fija"]), _ritmo(t), _hilos_para(t), vuelta,
+              % (t, len(p["fija"]), _ritmo(t), p.get("hilos", 1), vuelta,
                  " · ".join(detalle)))
 
     peor_error = max((len(p["fija"]) + p["cupo_rot"]) / _ritmo(t) for t, p in plan.items())
     req_s = sum(_ritmo(t) for t in plan)
-    print("\n   → %d hilos · %.0f req/s en total (factor %.2f del ritmo medido)"
-          % (sum(_hilos_para(t) for t in plan), req_s, _factor_ritmo()))
+    usados = sum(p.get("hilos", 1) for p in plan.values())
+    pedidos = sum(_hilos_para(t) for t in plan)
+    print("\n   → %d hilos de %d pedidos (tope del runner: %d) · %.0f req/s "
+          "presupuestados (factor %.2f)"
+          % (usados, pedidos, _tope_hilos_total(), req_s, _factor_ritmo()))
     print("   → errores: detección hasta %.0f segundos" % peor_error)
     for niv in ("movil", "desconocido", "quieto"):
         if ciclo[niv]:
