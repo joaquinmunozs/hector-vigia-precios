@@ -76,6 +76,19 @@ UMBRAL_CATEGORIA = 0.35    # 35%-50%: SOLO electrónicos u hogar, ver arriba
 # mediana todavía se mueve con cualquier promoción de fin de semana. Con 5 ya
 # hay dos fines de semana adentro y el número deja de bailar.
 MIN_OBSERVACIONES = 5
+
+# Días de observación real antes de creerle a la mediana. Reemplaza a
+# MIN_OBSERVACIONES como criterio de "tener historial" — ver el comentario
+# dentro de `evaluar`. Siete días cubren un ciclo semanal completo del retail,
+# fin de semana incluido, que es cuando más se mueven los precios en Chile.
+DIAS_MINIMOS_HISTORIAL = 7
+
+
+def _dias_cubiertos(ts, ahora):
+    """Cuántos días de observación real cubren estos tramos."""
+    if not ts:
+        return 0.0
+    return (int(ahora) - min(d for _, d, _ in ts)) / 86400.0
 VENTANA_REPETIR = 12 * 3600
 # Fallos SEGUIDOS antes de sacar una URL del catálogo. Un éxito lo resetea
 # (ver `limpiar_fallo`), así que esto cuenta rachas, no fallos totales.
@@ -175,6 +188,10 @@ def _migrar(con):
         # tiendas cambian la foto sin avisar. La última lectura manda.
         "precios": [
             ("imagen", "TEXT"),
+            # Hasta cuándo estuvo vigente ESE precio. Con `visto_en` forma un
+            # RANGO: "costó $X desde el día 1 hasta el día 12". Ver `guardar`.
+            # NULL en las filas viejas, que se leen como rango de duración 0.
+            ("visto_hasta", "INTEGER"),
         ],
         "alertas": [
             ("tipo", "TEXT NOT NULL DEFAULT 'error'"),
@@ -219,11 +236,52 @@ def abrir():
 
 
 def guardar(con, tienda, url, nombre, precio, cuando=None, imagen=None):
+    """Guarda el precio como un RANGO, no como una lectura suelta.
+
+    POR QUÉ (12-ago-2026)
+    --------------------------------------------------------------------------
+    Antes esto insertaba una fila por CADA lectura, aunque el precio fuera
+    idéntico al de hace una hora. Medido sobre producción: de 509.834 lecturas
+    guardadas, sólo 177.146 eran combinaciones distintas de producto+precio —
+    o sea **el 65,3% de las filas era la misma lectura repetida**.
+
+    Y la base entera se baja y se sube en cada corrida. Proyectado a ese
+    ritmo: 5,7 GB a los 30 días y 69 GB al año. Justo cuando el producto
+    alcanza los 30 días de historial que necesita, el mecanismo que lo guarda
+    deja de dar. Guardando sólo los cambios, un año entero cabe en ~268 MB.
+
+    POR QUÉ RANGOS Y NO SIMPLEMENTE DEDUPLICAR
+    --------------------------------------------------------------------------
+    Borrar las filas repetidas a secas EMPEORA la mediana. Un producto que
+    estuvo a $100.000 durante 29 días y a $150.000 durante uno:
+
+        una fila por lectura  -> mediana $100.000  (correcto)
+        una fila por precio   -> mediana $125.000  (mal: pesan igual)
+
+    Con rango, cada fila sabe CUÁNTO DURÓ ese precio, y la mediana se pondera
+    por tiempo (ver `_mediana_ponderada`). Sale más liviano *y* más correcto
+    que las dos alternativas. Es lo que hace Keepa.
+    """
+    ahora = int(cuando or time.time())
+    precio = int(precio)
+    ultima = con.execute(
+        "SELECT id, precio FROM precios WHERE url=? AND precio>0 "
+        "ORDER BY visto_en DESC, id DESC LIMIT 1", (url,)).fetchone()
+
+    # Mismo precio que la última vez: se estira el rango en vez de insertar.
+    if ultima and ultima["precio"] == precio:
+        con.execute(
+            "UPDATE precios SET visto_hasta=?, "
+            "nombre=COALESCE(NULLIF(?,''), nombre), "
+            "imagen=COALESCE(?, imagen) WHERE id=?",
+            (ahora, nombre or "", imagen or None, ultima["id"]))
+        return
+
     con.execute(
-        "INSERT INTO precios (tienda, url, nombre, precio, visto_en, imagen) "
-        "VALUES (?,?,?,?,?,?)",
-        (tienda, url, nombre or "", int(precio), int(cuando or time.time()),
-         imagen or None))
+        "INSERT INTO precios "
+        "(tienda, url, nombre, precio, visto_en, visto_hasta, imagen) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (tienda, url, nombre or "", precio, ahora, ahora, imagen or None))
 
 
 def fijar_base(con, url, precio, origen="inicial", cuando=None):
@@ -270,13 +328,52 @@ TOPE_HISTORIAL = 2000
 def historial(con, url, dias=None, limite=TOPE_HISTORIAL, ahora=None):
     """Los precios de esta ficha dentro de la ventana de tiempo, no las N
     últimas lecturas. Ver el comentario de `VENTANA_HISTORIAL_DIAS`."""
+    return [(p, desde) for p, desde, _hasta in
+            tramos(con, url, dias=dias, limite=limite, ahora=ahora)]
+
+
+def tramos(con, url, dias=None, limite=TOPE_HISTORIAL, ahora=None):
+    """Igual que `historial` pero con el rango completo: (precio, desde, hasta).
+
+    Un tramo entra si SE SOLAPA con la ventana, no si empezó dentro: un precio
+    que lleva vigente dos meses tiene `visto_en` viejo pero es el precio de
+    hoy, y dejarlo fuera sería perder justo la referencia que más pesa.
+    """
     dias = VENTANA_HISTORIAL_DIAS if dias is None else dias
-    desde = int(ahora or time.time()) - int(dias * 86400)
+    corte = int(ahora or time.time()) - int(dias * 86400)
     filas = con.execute(
-        "SELECT precio, visto_en FROM precios WHERE url=? AND precio>0 "
-        "AND visto_en >= ? ORDER BY visto_en DESC LIMIT ?",
-        (url, desde, limite)).fetchall()
-    return [(f["precio"], f["visto_en"]) for f in filas]
+        "SELECT precio, visto_en, COALESCE(visto_hasta, visto_en) AS hasta "
+        "FROM precios WHERE url=? AND precio>0 "
+        "AND COALESCE(visto_hasta, visto_en) >= ? "
+        "ORDER BY visto_en DESC LIMIT ?",
+        (url, corte, limite)).fetchall()
+    return [(f["precio"], f["visto_en"], f["hasta"]) for f in filas]
+
+
+def _mediana_ponderada(con, url, dias=None, ahora=None):
+    """La mediana del precio ponderada por CUÁNTO DURÓ cada uno.
+
+    Es la diferencia entre "qué precio vi más veces" y "qué precio tuvo más
+    tiempo", y sólo la segunda pregunta describe lo que el producto vale de
+    verdad. Un precio inflado tres días no puede pesar lo mismo que el precio
+    normal de tres semanas sólo porque nos tocó mirarlo seguido.
+
+    Si ningún tramo tiene duración (base recién migrada, todas las filas
+    viejas), cae a la mediana simple — mismo comportamiento que antes.
+    """
+    ts = tramos(con, url, dias=dias, ahora=ahora)
+    if not ts:
+        return None, 0
+    pesos = [(p, max(0, h - d)) for p, d, h in ts]
+    total = sum(w for _, w in pesos)
+    if total <= 0:
+        return statistics.median([p for p, _, _ in ts]), len(ts)
+    acum = 0.0
+    for precio, w in sorted(pesos):
+        acum += w
+        if acum >= total / 2.0:
+            return precio, len(ts)
+    return pesos[-1][0], len(ts)
 
 
 def _base_de(con, url):
@@ -302,13 +399,31 @@ def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None):
     o sea los tópicos de Electrónicos y Hogar no reciben nada entre 35% y 50%.
     """
     ahora = int(ahora or time.time())
-    previos = [p for p, _ in historial(con, url)]
+    ts = tramos(con, url, ahora=ahora)
+    previos = [p for p, _, _ in ts]
 
-    # Con historial suficiente manda la MEDIANA (resiste que un error viejo
-    # quedara registrado y arrastrara el promedio hacia abajo). Sin historial,
-    # manda la línea base fijada al descubrir el producto.
-    if len(previos) >= MIN_OBSERVACIONES:
-        referencia = statistics.median(previos)
+    # ── "TENER HISTORIAL" SE MIDE EN DÍAS, NO EN LECTURAS (12-ago-2026) ────
+    #
+    # Antes el criterio era `len(previos) >= MIN_OBSERVACIONES` (5 lecturas).
+    # Eso dejó de significar nada por dos motivos:
+    #
+    #   1. Desde que los precios se guardan como RANGOS, un producto estable
+    #      tiene UNA sola fila aunque lleve un mes vigilado. Contar filas lo
+    #      dejaría para siempre "sin historial".
+    #   2. Aun antes, contar lecturas engañaba: medido en producción, las
+    #      fichas con 5 o más lecturas cubrían 0,62 días. Cinco lecturas de la
+    #      misma tarde no son historia de nada.
+    #
+    # Lo que hace confiable a una referencia es el TIEMPO OBSERVADO. Siete
+    # días es lo que el propio README ya prometía, y cubre un ciclo semanal
+    # completo del retail — incluido el fin de semana, que es cuando más se
+    # mueven los precios en Chile.
+    cobertura = _dias_cubiertos(ts, ahora)
+    if cobertura >= DIAS_MINIMOS_HISTORIAL:
+        # La MEDIANA, ponderada por cuánto duró cada precio: resiste que un
+        # error viejo quedara registrado, y que un precio inflado unos días
+        # pese lo mismo que el precio normal de tres semanas.
+        referencia, _ = _mediana_ponderada(con, url, ahora=ahora)
         con_historial = True
     else:
         referencia = _base_de(con, url)
@@ -469,19 +584,33 @@ def duracion_errores(con, ventana_dias=30, ahora=None):
 def recalcular_bases(con, ahora=None):
     """Recalcula la línea base usando la mediana del historial acumulado.
 
-    Se llama cada ~2 semanas desde modal_app.py. Solo toca productos que ya
-    tengan al menos MIN_OBSERVACIONES lecturas; los demás conservan su base
-    inicial, que ya sirve para detectar.
+    Se llama los días 1 y 15. Solo toca productos con suficiente TIEMPO
+    observado; los demás conservan su base inicial, que ya sirve para
+    detectar errores de precio.
+
+    EL FILTRO ES POR DÍAS, NO POR FILAS (12-ago-2026)
+    --------------------------------------------------------------------------
+    Antes exigía `COUNT(*) >= MIN_OBSERVACIONES`. Desde que los precios se
+    guardan como rangos, un producto estable tiene UNA sola fila aunque lleve
+    un mes vigilado: con el filtro viejo, la recalibración del día 15 no
+    habría tocado casi nada y las referencias se habrían quedado congeladas en
+    la foto del primer día — exactamente lo que esta función existe para
+    arreglar.
     """
     ahora = int(ahora or time.time())
+    corte = ahora - int(DIAS_MINIMOS_HISTORIAL * 86400)
     filas = con.execute(
-        "SELECT url, COUNT(*) n FROM precios WHERE precio>0 "
-        "GROUP BY url HAVING n >= ?", (MIN_OBSERVACIONES,)).fetchall()
+        "SELECT url, MIN(visto_en) AS primero FROM precios WHERE precio>0 "
+        "AND visto_en > 0 GROUP BY url HAVING primero <= ?",
+        (corte,)).fetchall()
     tocados = 0
     for f in filas:
-        previos = [p for p, _ in historial(con, f["url"])]
-        if previos:
-            fijar_base(con, f["url"], statistics.median(previos), "recalculada", ahora)
+        # Misma mediana ponderada por tiempo que usa `evaluar`: si acá se
+        # calculara de otra forma, la referencia recalibrada no coincidiría
+        # con la que se compara en cada lectura.
+        ref, n_tramos = _mediana_ponderada(con, f["url"], ahora=ahora)
+        if ref:
+            fijar_base(con, f["url"], ref, "recalculada", ahora)
             tocados += 1
     con.commit()
     return tocados
