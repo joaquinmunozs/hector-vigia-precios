@@ -8,11 +8,24 @@ name: Rat.IA — publicar en Instagram y Facebook
 # instante llenaría el feed de 20 posts un día y ninguno al siguiente, y
 # Instagram castiga ese patrón. Tres tandas con tope de piezas dan un feed
 # parejo. El aviso INMEDIATO sigue siendo Telegram, que es lo que se cobra.
+# EL CRON VIENE DESACTIVADO A PROPÓSITO.
+#
+# `redes.py` se escribió antes de INTEGRACIONES.md y está desalineado con el
+# encargo: usa IA para el creativo (descartada), publica una imagen suelta en
+# vez de un carrusel, no respeta el retraso obligatorio frente a Telegram y no
+# usa el verificador. Dejarlo correr solo publicaría cosas que no cumplen §5.
+#
+# Segundo motivo: `hector.yml` ya está perdiendo la mitad de sus corridas por
+# cola (12 canceladas de las últimas 23). Sumarle 3 corridas diarias que además
+# bajan un artifact de 300 MB no ayuda.
+#
+# Queda el disparo a mano, que sirve para probar en seco. Cuando el módulo esté
+# rehecho, se descomenta el bloque `schedule`.
 on:
-  schedule:
-    - cron: "10 13 * * *"
-    - cron: "10 18 * * *"
-    - cron: "10 0 * * *"
+  # schedule:
+  #   - cron: "10 13 * * *"
+  #   - cron: "10 18 * * *"
+  #   - cron: "10 0 * * *"
   workflow_dispatch:
     inputs:
       probar:
