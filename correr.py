@@ -101,7 +101,18 @@ def _solo_descubrir():
 # completa es para construir historial, y el historial se construye con
 # lecturas espaciadas, no con muchas seguidas.
 def _toca_barrida_completa(ahora):
-    """Solo en la primera corrida del día (la de las 00:00 UTC)."""
+    """Solo en la primera corrida del día (la de las 00:00 UTC).
+
+    `HECTOR_BARRIDA_COMPLETA=1` la fuerza sin mirar la hora. Existe porque
+    atarla al reloj tiene un modo de falla real: las corridas toman el SHA
+    del momento en que se CREAN y pueden quedar encoladas horas, así que la
+    corrida "de las 00:00" puede terminar arrancando a las 04:00 y saltarse
+    la barrida del día sin que nadie se entere. Y para ponerse al día con el
+    catálogo hace falta poder pedirla a mano, no esperar al reloj.
+    """
+    if os.environ.get("HECTOR_BARRIDA_COMPLETA", "").strip() == "1":
+        print("\nBarrida completa FORZADA (pedida a mano).")
+        return True
     return ahora.hour < 4
 
 

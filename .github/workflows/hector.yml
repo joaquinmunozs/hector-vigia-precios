@@ -28,6 +28,10 @@ on:
         description: "Solo repoblar el catálogo (sin vigilante ni barrida)"
         type: boolean
         default: false
+      barrida_completa:
+        description: "Forzar la barrida completa aunque no sean las 00:00 UTC"
+        type: boolean
+        default: false
 
 # Si el cron se atrasa y dispara una corrida nueva mientras la anterior sigue
 # escribiendo, la nueva ESPERA en la cola.
@@ -123,6 +127,7 @@ jobs:
           # repo define aquí SU subconjunto y no se pisan (ver tiendas.py).
           HECTOR_TIENDAS: ${{ vars.HECTOR_TIENDAS }}
           HECTOR_SOLO_DESCUBRIR: ${{ github.event.inputs.solo_descubrir == 'true' && '1' || '0' }}
+          HECTOR_BARRIDA_COMPLETA: ${{ github.event.inputs.barrida_completa == 'true' && '1' || '0' }}
           # paris.cl y easy.cl devuelven 403 a la IP de Azure del runner y 200
           # al edge de Cloudflare. Estas dos variables son lo único que hace
           # que esas dos tiendas salgan por el Worker (ver proxy-tiendas/).
