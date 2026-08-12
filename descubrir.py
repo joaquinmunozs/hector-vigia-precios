@@ -267,18 +267,35 @@ _DE_PRODUCTO = re.compile(r"(?:^|[/_\-])(produc|pdp|item|sku|ficha)", re.I)
 MAX_NIVEL_SITEMAP = 5
 
 
-def desde_sitemap(dominio, tope=100000):
+def desde_sitemap(dominio, tope=100000, desplazamiento=0):
     """Todas las URLs candidatas a ficha que publique el sitemap.
 
     Recorre el árbol de sitemaps en anchura, nivel por nivel, hasta dar con
     las URLs que no son XML. No se puede asumir una profundidad fija: cada
     tienda anida distinto.
+
+    `desplazamiento` ROTA por cuál sitemap hijo se empieza (12-ago-2026).
+    --------------------------------------------------------------------------
+    Sin esto, una tienda más grande que `tope` queda amputada en silencio y
+    siempre por el mismo lado: el árbol se recorre en el mismo orden todas las
+    semanas, se corta en el mismo punto, y la parte de atrás del catálogo NO
+    EXISTE para el sistema — ni siquiera como URL pendiente.
+
+    Es exactamente lo que pasa con Falabella: `tope_tienda=100000` contra
+    ~1,5M de fichas, así que cada lunes se redescubren las mismas 100.000 y
+    1,4 millones nunca entran. El síntoma engaña, porque el contador de
+    "fichas descubiertas" sube y parece que funciona.
+
+    Rotando el punto de partida, cada descubrimiento muerde una tajada
+    distinta y el catálogo completo entra a lo largo de varias pasadas. Es el
+    mismo truco de `_con_rotacion` en vigia.py, aplicado un nivel más arriba.
     """
     pendientes = ubicar_sitemap(dominio)
     if not pendientes:
         return []
 
     planas, vistos, nivel = [], set(), 0
+    rotado = False
     while pendientes and nivel < MAX_NIVEL_SITEMAP and len(planas) < tope:
         siguiente = []
         for s in pendientes:
@@ -302,6 +319,17 @@ def desde_sitemap(dominio, tope=100000):
         # catálogo de páginas que nunca tienen precio.
         preferidos = [x for x in siguiente if _DE_PRODUCTO.search(x)]
         pendientes = preferidos or siguiente
+
+        # La rotación se aplica UNA vez, en el primer nivel donde ya hay
+        # varios sitemaps hijos entre los que elegir. Más abajo daría igual
+        # (dentro de un mismo hijo el orden no importa) y más arriba no hay
+        # nada que rotar todavía.
+        if desplazamiento and not rotado and len(pendientes) > 1:
+            k = desplazamiento % len(pendientes)
+            pendientes = pendientes[k:] + pendientes[:k]
+            rotado = True
+            print("      (rotación de sitemaps: se empieza por el %d de %d)"
+                  % (k + 1, len(pendientes)))
         nivel += 1
 
     # Se normaliza el doble slash que publican algunos sitemaps (easy.cl
@@ -374,10 +402,10 @@ def _permitidas_por_robots(dominio, urls):
     return [u for u in urls if u not in set(excluidas)]
 
 
-def fichas_de(dominio, tope=100000):
+def fichas_de(dominio, tope=100000, desplazamiento=0):
     """Todas las URLs de ficha que se puedan hallar, por cualquiera de las dos
     vías. Devuelve lista sin duplicados, ya filtrada contra `Disallow`."""
-    encontradas = desde_sitemap(dominio, tope)
+    encontradas = desde_sitemap(dominio, tope, desplazamiento)
     if not encontradas:
         encontradas = desde_categorias(dominio, tope)
     unicas = list(dict.fromkeys(encontradas))[:tope]

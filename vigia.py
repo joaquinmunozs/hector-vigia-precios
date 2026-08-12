@@ -117,6 +117,26 @@ def _plata(n):
 
 
 # ─────────────────────────────── descubrir ──────────────────────────────────
+def _marcador_descubrir(con, dominio, valor=None):
+    """Por cuál sitemap hijo le toca empezar a esta tienda la próxima vez.
+
+    Vive en la misma tabla `marcadores` que la rotación de la barrida y la del
+    vigilante, con prefijo `desc_` para no pisarlas.
+    """
+    con.execute("CREATE TABLE IF NOT EXISTS marcadores ("
+                "clave TEXT PRIMARY KEY, valor INTEGER NOT NULL)")
+    clave = "desc_" + dominio
+    if valor is None:
+        f = con.execute("SELECT valor FROM marcadores WHERE clave=?",
+                        (clave,)).fetchone()
+        return f["valor"] if f else 0
+    con.execute("INSERT INTO marcadores (clave, valor) VALUES (?,?) "
+                "ON CONFLICT(clave) DO UPDATE SET valor=excluded.valor",
+                (clave, int(valor)))
+    con.commit()
+    return valor
+
+
 def descubrir_productos(con, niveles=("limpia", "media"), tope_tienda=100000):
     """Registra todas las fichas que publiquen los sitemaps."""
     total = 0
@@ -125,11 +145,21 @@ def descubrir_productos(con, niveles=("limpia", "media"), tope_tienda=100000):
         if dom in cat_tiendas.SOLO_CON_NAVEGADOR:
             print("  %-20s se salta: el precio lo pinta JavaScript" % dom)
             continue
+        # Por dónde le tocó empezar a esta tienda. Sin esto, una tienda más
+        # grande que `tope_tienda` se redescubre idéntica cada semana y el
+        # resto de su catálogo no entra nunca — Falabella lleva 100.000 de
+        # ~1,5M por exactamente esto. Ver `desde_sitemap`.
+        desp = _marcador_descubrir(con, dom)
         try:
-            fichas = descubrir.fichas_de(dom, tope=tope_tienda)
+            fichas = descubrir.fichas_de(dom, tope=tope_tienda,
+                                         desplazamiento=desp)
         except Exception as e:                       # noqa: BLE001
             print("  %-20s error al descubrir: %s" % (dom, str(e)[:45]))
             continue
+        # Avanza sólo si la tienda LLENÓ el tope: si cabe entera, rotar la
+        # haría empezar por el medio sin ganar nada.
+        if len(fichas) >= tope_tienda:
+            _marcador_descubrir(con, dom, desp + 1)
 
         nuevas = 0
         for u in fichas:
