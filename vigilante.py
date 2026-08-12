@@ -110,13 +110,32 @@ RITMO_SEGURO = {
     "underarmour.cl": 16.0,
     "vans.cl": 7.0,
     "jumbo.cl": 3.9,
-    # Sin medir todavia: casaideas, salcobrand y tricot fallaron la medicion
-    # (hay que darles una ficha valida). El resto conserva el defecto.
+    # ── Medidos el 12-ago-2026 DESDE EL RUNNER, no desde casa ─────────────
+    # (workflow `medir-tiendas.yml`, corrida 31555412634). Las dos aguantaron
+    # 120 hilos con 100% de éxito y sin degradar: 65,2 req/s cada una, que con
+    # el 60% de margen del método dan 39,1. Antes corrían a 15 y a 5.0.
+    "hites.com": 39.1,
+    "salcobrand.cl": 39.1,
+    #
+    # tricot NO se pudo medir, y esta vez no es por el objetivo: devolvió
+    # desafío de WAF con 0% de éxito ya en el primer escalón de 5 hilos.
+    #
+    # OJO CON LEER ESO COMO "tricot nos bloquea": en producción tricot es la
+    # tienda con MEJOR cobertura de todas (25.856 de 25.947 fichas, 99,6%).
+    # Si estuviera bloqueando, no mediría casi nada. Lo que la delata es el
+    # método: `medir_limites.py` le pega SIEMPRE A LA MISMA URL —su propio
+    # comentario dice que es el peor caso a propósito— y el WAF de tricot
+    # reacciona a esa repetición, no al volumen. La barrida pide fichas
+    # distintas y por eso no la gatilla.
+    #
+    # Se queda en el `_por_defecto` de 5.0, que es conservador y funciona.
+    # Subirlo requiere medirlo con fichas rotativas, no con una sola.
     "tottus.cl": 49.0,
     "adidas.cl": 40.0,
     "paris.cl": 16.0,
+    # spdigital se queda bajo a propósito: no es que no se pueda leer (18 de
+    # 20 URLs "fallidas" leyeron bien de a una), es que se ahoga bajo carga.
     "spdigital.cl": 15.0,
-    "hites.com": 15.0,
     "abc.cl": 15.5,
     "bata.cl": 21.5,
     "_por_defecto": 5.0,
