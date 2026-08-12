@@ -58,6 +58,8 @@ referencia se construye con lecturas espaciadas, no con miles del mismo minuto.
 Por eso solo se guarda cuando el precio CAMBIA respecto a la última lectura.
 """
 import argparse
+import math
+import os
 import queue
 import sys
 import threading
@@ -139,25 +141,111 @@ VUELTA_OBJETIVO = 59.0
 # cuenta en `cargar_lista`.
 PROPORCION_FIJA = 0.7
 
-# Tope de tiempo para que la lista ROTATIVA dé una vuelta completa. No es una
-# meta que se persiga con más peticiones: el tamaño de la lista se recorta
-# para que quepa en esta ventana con el cupo ya asignado (ver `cargar_lista`).
+# Referencia de cuánto se querría tardar en dar una vuelta completa a las
+# ofertas. YA NO RECORTA LA LISTA (12-ago-2026): antes el catálogo se cortaba
+# para caber acá, que es justo lo que dejaba productos fuera. Ahora entra todo
+# el catálogo y el tiempo de vuelta real se mide y se informa; este número
+# queda solo como la meta contra la que compararlo.
 VENTANA_OFERTAS_SEG = 600.0   # 10 minutos
 
 PAUSA_ENTRE_VUELTAS = 0.0      # sin respiro: la vuelta ya está limitada por ritmo
 
 
+# ── EL CUELLO DE BOTELLA QUE ESTUVO TAPADO HASTA EL 12-AGO-2026 ────────────
+#
+# `RITMO_SEGURO` dice cuántas peticiones por segundo aguanta cada tienda, y
+# `cupo()` dimensiona las listas con ese número. Pero `_vigilar_tienda` corría
+# UN SOLO HILO por tienda, y un hilo secuencial no puede hacer 105 req/s: hace
+# 1/latencia, o sea ~1,2 req/s. La fórmula presupuestaba 25 veces más trabajo
+# del que físicamente se hacía.
+#
+# Medido en producción (corrida 31515035162): 298.535 lecturas en 3,4 h =
+# 24,4 req/s con 21 tiendas — exactamente 21 hilos ÷ 0,86 s de latencia. La
+# capacidad segura de esas mismas tiendas, sumada, es de ~625 req/s. Se estaba
+# usando el 4%.
+#
+# El efecto real: la vuelta de Falabella (6.195 productos a 105 req/s
+# presupuestados) tardaba ~85 min en vez de los 59 s prometidos. El pilar del
+# negocio — "un error de precio se detecta en menos de un minuto" — no se
+# cumplía, y no se veía porque el log imprime la vuelta TEÓRICA (cupo/ritmo),
+# nunca la medida.
+#
+# Arreglo: cada tienda recibe tantos hilos como necesite para sostener SU
+# ritmo ya medido como seguro. No se pide ni una petición por encima de lo
+# medido; se deja de desperdiciar el 96% de lo que ya estaba autorizado.
+
+# Cuánto tarda una petición, punta a punta. Sale de dividir las lecturas
+# reales por el tiempo real de la corrida citada arriba (24,4 req/s ÷ 21
+# hilos). Solo se usa para dimensionar cuántos hilos hacen falta: si en la
+# práctica resulta más baja, sobran hilos y el `intervalo` los frena igual,
+# así que errar por alto acá es inofensivo.
+LATENCIA_TIPICA = 0.9
+
+# Tope de hilos contra UNA tienda. `medir_limites.py` llegó a 120 sin que
+# ninguna se quejara; 90 deja margen bajo eso.
+TOPE_HILOS_TIENDA = 90
+
+# ── La rampa, y por qué no se salta directo al ritmo completo ──────────────
+#
+# Los ritmos de `RITMO_SEGURO` se midieron en RÁFAGAS CORTAS con
+# `medir_limites.py`, no sosteniéndolos durante 3,4 h seguidas. Son cosas
+# distintas: un WAF mira volumen acumulado, no solo picos. El propio
+# `vigia.py` ya advierte lo mismo sobre la barrida ("ninguna medición de ritmo
+# cubre ese volumen sostenido").
+#
+# Por eso el arreglo entra con freno de mano: 0,35 del ritmo medido son ~220
+# req/s, que ya son 9 veces lo de hoy y siguen bajo el 21% del último escalón
+# donde las tiendas respondieron 100%. Se sube mirando el resultado de una
+# corrida real, no de una vez.
+#
+#   HECTOR_FACTOR_RITMO=0.6   → ~375 req/s
+#   HECTOR_FACTOR_RITMO=1.0   → ~625 req/s (el techo ya medido como seguro)
+#
+# Qué mirar antes de subirlo, en el log de la corrida: que `fallos:` no crezca
+# de golpe en una tienda concreta (eso es un WAF cortando, no una ficha mala)
+# y que `req/s real` se acerque al presupuestado. Si una tienda empieza a
+# fallar en bloque, baja el factor o dale a ESA tienda un ritmo menor en
+# RITMO_SEGURO — no bajes el global por una.
+def _factor_ritmo():
+    try:
+        f = float(os.environ.get("HECTOR_FACTOR_RITMO", "0.35"))
+    except ValueError:
+        return 0.35
+    return max(0.05, min(1.0, f))
+
+
 def _ritmo(tienda):
-    return RITMO_SEGURO.get(tienda, RITMO_SEGURO["_por_defecto"])
+    """Peticiones/s que se le van a pedir a esta tienda, ya con la rampa."""
+    return RITMO_SEGURO.get(tienda, RITMO_SEGURO["_por_defecto"]) * _factor_ritmo()
+
+
+def _hilos_para(tienda):
+    """Cuántos hilos sostienen el ritmo de esta tienda.
+
+    Un hilo entrega 1/LATENCIA_TIPICA req/s, así que para `r` req/s hacen
+    falta `r × LATENCIA_TIPICA` hilos. Es la línea que faltaba: sin ella el
+    ritmo quedaba capado en 1/latencia por tienda, sin importar lo que dijera
+    RITMO_SEGURO.
+    """
+    return max(1, min(TOPE_HILOS_TIENDA,
+                      int(math.ceil(_ritmo(tienda) * LATENCIA_TIPICA))))
+
+
+# Una ficha que no contesta en 8 s no va a contestar: la latencia normal es
+# de ~0,9 s. Con 15 s (y el reintento de `bajar` con curl_cffi encima) cada
+# URL muerta se comía el equivalente a 30 lecturas buenas del presupuesto de
+# su hilo. Bajarlo no pierde fichas sanas y devuelve ese tiempo a la vuelta.
+TIEMPO_FICHA = 8
 
 
 def _leer(tienda, url):
     especial = adaptadores.para(tienda)
     if especial:
-        d = especial(url, lambda u, c: descubrir.bajar(u, tiempo=15, cabeceras=c))
+        d = especial(url, lambda u, c: descubrir.bajar(u, tiempo=TIEMPO_FICHA,
+                                                       cabeceras=c))
         if d:
             return d
-    return extractor.extraer(descubrir.bajar(url, tiempo=15))
+    return extractor.extraer(descubrir.bajar(url, tiempo=TIEMPO_FICHA))
 
 
 def cupo(tienda, vuelta=VUELTA_OBJETIVO):
@@ -225,26 +313,59 @@ def cargar_lista(con, vuelta=VUELTA_OBJETIVO):
         resto_por_tienda.setdefault(f["tienda"], []).append(
             (f["url"], f["nombre"], f["precio"] or 0))
 
+    # Dónde quedó la rotación de ofertas de cada tienda en la corrida anterior.
+    # Se lee acá, en el hilo que tiene la conexión: los hilos de tienda no
+    # pueden tocar sqlite (ver el docstring de correr.py).
+    marcas = _marcas_rotacion(con)
+
     plan = {}
     for t in set(fija_por_tienda) | set(resto_por_tienda):
         cupo_total = cupo(t, vuelta)
         cupo_fijo = max(1, int(cupo_total * PROPORCION_FIJA))
         cupo_rot = max(0, cupo_total - cupo_fijo)
 
-        # Cuántas vueltas entran en la ventana de 10 min, y por lo tanto
-        # cuántas candidatas puede cubrir la rotación sin pasarse del cupo
-        # ya asignado — la cuenta que hace que "10 minutos" sea una
-        # consecuencia del presupuesto, no una promesa sin respaldo.
-        vueltas_en_ventana = max(1, int(VENTANA_OFERTAS_SEG / vuelta))
-        tope_rotativa = cupo_rot * vueltas_en_ventana
-
+        # NADA FUERA DEL CATÁLOGO (12-ago-2026)
+        # ------------------------------------------------------------------
+        # Antes la lista rotativa se recortaba a `cupo_rot × vueltas_en_
+        # ventana` para que una vuelta completa cupiera en 10 min. Esa fue la
+        # decisión que dejaba productos fuera: con el cupo real de entonces
+        # daba 57.080 candidatas de 173.000 con precio conocido — dos de cada
+        # tres ofertas del catálogo eran invisibles para el sistema, y no
+        # había nada en el log que lo dijera.
+        #
+        # Ahora entra TODO el catálogo con precio y la ventana pasa a ser una
+        # CONSECUENCIA MEDIDA, no un recorte: la vuelta tarda lo que tarde y
+        # el log lo informa. Es el cambio que hace que "todas las ofertas, de
+        # todas las tiendas" sea cierto en vez de aspiracional.
         candidatas = sorted(resto_por_tienda.get(t, []), key=lambda x: -x[2])
         plan[t] = {
             "fija": fija_por_tienda.get(t, []),
-            "rotativa": candidatas[:tope_rotativa],
+            "rotativa": candidatas,
             "cupo_rot": cupo_rot,
+            "desde": marcas.get(t, 0) % max(1, len(candidatas)),
         }
     return plan
+
+
+def _marcas_rotacion(con):
+    """Por dónde iba la rotación de ofertas de cada tienda, de la corrida
+    anterior. Vive en la misma tabla `marcadores` que usa `vigia.py`."""
+    con.execute("CREATE TABLE IF NOT EXISTS marcadores ("
+                "clave TEXT PRIMARY KEY, valor INTEGER NOT NULL)")
+    return {f["clave"][4:]: f["valor"] for f in con.execute(
+        "SELECT clave, valor FROM marcadores WHERE clave LIKE 'rot_%'")}
+
+
+def _guardar_marcas(con, progreso):
+    """Anota dónde quedó cada tienda, para que la próxima corrida siga ahí."""
+    for tienda, p in progreso.items():
+        if "desde" not in p:
+            continue
+        con.execute(
+            "INSERT INTO marcadores (clave, valor) VALUES (?,?) "
+            "ON CONFLICT(clave) DO UPDATE SET valor=excluded.valor",
+            ("rot_" + tienda, int(p["desde"])))
+    con.commit()
 
 
 def _ventana_rotativa(rotativa, desde, cupo_rot):
@@ -260,22 +381,41 @@ def _ventana_rotativa(rotativa, desde, cupo_rot):
     return ventana, (desde + cupo_rot) % len(rotativa)
 
 
-def _vigilar_tienda(tienda, plan, salida, parar):
+def _vigilar_tienda(tienda, plan, salida, parar, progreso):
     """Recorre en bucle los productos de UNA tienda, a su ritmo seguro.
 
     Cada vuelta: TODA la lista fija (errores, siempre) + una ventana de la
     rotativa (ofertas, una tajada distinta cada vez). El ritmo por producto
     es el mismo para ambas — lo que cambia es cuánto de cada una entra en el
     cupo, no la velocidad a la que se lee.
+
+    LA VUELTA SE REPARTE ENTRE VARIOS HILOS (12-ago-2026)
+    --------------------------------------------------------------------------
+    Antes esto era un solo hilo recorriendo la lista en serie, y ahí moría el
+    ritmo: por rápida que fuera la tienda, un hilo entrega 1/latencia ≈ 1,2
+    req/s. Ahora la vuelta se parte en `n` tajadas intercaladas y cada una va
+    en su hilo.
+
+    El ritmo AGREGADO sigue siendo exactamente el de `RITMO_SEGURO` (ya con la
+    rampa): por eso el intervalo de cada hilo se multiplica por `n`. Con 90
+    hilos a una petición cada 0,9 s, la tienda ve 100 req/s — no 90 ráfagas
+    simultáneas cada 0,9 s. Se reparte el mismo presupuesto entre más manos;
+    no se pide más.
     """
-    intervalo = 1.0 / _ritmo(tienda)
     fija = plan["fija"]
     rotativa = plan["rotativa"]
     cupo_rot = plan["cupo_rot"]
-    desde = 0
-    while not parar.is_set():
-        ventana, desde = _ventana_rotativa(rotativa, desde, cupo_rot)
-        for url, _nombre, _precio in fija + ventana:
+    n = _hilos_para(tienda)
+    intervalo = n / max(0.01, _ritmo(tienda))
+    # Retoma donde quedó la corrida ANTERIOR, no en cero. Con vueltas de
+    # ofertas que duran más que una corrida de 3,4 h, arrancar siempre en 0
+    # significaba releer eternamente la cabeza de la lista y no llegar nunca
+    # a la cola — el mismo modo de falla silencioso que la rotación de
+    # `vigia.py` ya tenía resuelto con su marcador.
+    desde = plan.get("desde", 0)
+
+    def _tanda(urls):
+        for url in urls:
             if parar.is_set():
                 return
             t0 = time.time()
@@ -289,6 +429,28 @@ def _vigilar_tienda(tienda, plan, salida, parar):
             resto = intervalo - (time.time() - t0)
             if resto > 0:
                 time.sleep(resto)
+
+    while not parar.is_set():
+        t_vuelta = time.time()
+        ventana, desde = _ventana_rotativa(rotativa, desde, cupo_rot)
+        objetivos = [u for u, _n, _p in fija + ventana]
+        if not objetivos:
+            return
+        obreros = [threading.Thread(target=_tanda, args=(objetivos[i::n],),
+                                    daemon=True)
+                   for i in range(min(n, len(objetivos)))]
+        for h in obreros:
+            h.start()
+        for h in obreros:
+            h.join()
+        # Se anota DESPUÉS de completar la vuelta: si la corrida se corta a
+        # media vuelta, la próxima la repite entera en vez de saltarse el
+        # trozo que quedó sin leer.
+        p = progreso.setdefault(tienda, {})
+        p["desde"] = desde
+        p["vueltas"] = p.get("vueltas", 0) + 1
+        p["seg_vuelta"] = time.time() - t_vuelta
+        p["por_vuelta"] = len(objetivos)
         time.sleep(PAUSA_ENTRE_VUELTAS)
 
 
@@ -303,23 +465,33 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
     total_rot = sum(len(p["rotativa"]) for p in plan.values())
     print("🔥 Errores: %d productos fijos · 🔁 Ofertas: %d en rotación · %d tiendas\n"
           % (total_fija, total_rot, len(plan)))
+    ciclo_ofertas = {}
     for t, p in sorted(plan.items(), key=lambda x: -len(x[1]["fija"])):
         vuelta = (len(p["fija"]) + p["cupo_rot"]) / _ritmo(t)
         vueltas_rot = len(p["rotativa"]) / max(1, p["cupo_rot"])
-        print("   %-18s %4d fijos + %4d rotativos (de %5d) · %.1f req/s · "
-              "vuelta ~%.0f seg · ofertas completas cada ~%.0f min"
+        ciclo_ofertas[t] = vueltas_rot * vuelta
+        print("   %-18s %4d fijos + %4d rotativos (de %6d) · %.1f req/s "
+              "(%d hilos) · vuelta ~%.0f seg · catálogo completo cada ~%.0f min"
               % (t, len(p["fija"]), p["cupo_rot"], len(p["rotativa"]), _ritmo(t),
-                 vuelta, vueltas_rot * vuelta / 60))
+                 _hilos_para(t), vuelta, ciclo_ofertas[t] / 60))
 
     peor_error = max((len(p["fija"]) + p["cupo_rot"]) / _ritmo(t) for t, p in plan.items())
-    print("\n   → errores: detección hasta %.0f segundos" % peor_error)
-    print("   → ofertas fuera de la lista de errores: hasta %.0f min\n"
-          % (VENTANA_OFERTAS_SEG / 60))
+    peor_oferta = max(ciclo_ofertas.values()) if ciclo_ofertas else 0
+    lento = max(ciclo_ofertas, key=ciclo_ofertas.get) if ciclo_ofertas else "-"
+    req_s = sum(_ritmo(t) for t in plan)
+    print("\n   → %d hilos · %.0f req/s en total (factor %.2f del ritmo medido)"
+          % (sum(_hilos_para(t) for t in plan), req_s, _factor_ritmo()))
+    print("   → errores: detección hasta %.0f segundos" % peor_error)
+    # Ya no es la ventana fija de antes: es lo que de verdad tarda la tienda
+    # más lenta en dar una vuelta a TODO su catálogo, sin recortar nada.
+    print("   → ofertas: catálogo completo cada %.0f min (la más lenta: %s)\n"
+          % (peor_oferta / 60, lento))
 
     salida = queue.Queue()
     parar = threading.Event()
+    progreso = {}
     hilos = [threading.Thread(target=_vigilar_tienda,
-                              args=(t, p, salida, parar), daemon=True)
+                              args=(t, p, salida, parar, progreso), daemon=True)
              for t, p in plan.items()]
     for h in hilos:
         h.start()
@@ -439,10 +611,28 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
     finally:
         parar.set()
         con.commit()   # por si quedó algo a medias al cortar
+        # Dónde quedó la rotación de cada tienda, para que la corrida
+        # siguiente RETOME ahí en vez de volver a la cabeza de la lista.
+        try:
+            _guardar_marcas(con, progreso)
+        except Exception as ex:                        # noqa: BLE001
+            print("  (no se pudo guardar la rotación: %s)" % str(ex)[:80])
 
     dur = max(1, time.time() - inicio)
     print("\nleídos: %d (%.1f/seg) · cambios: %d · hallazgos: %d · %.0f seg"
           % (leidos, leidos / dur, len(ultimo_precio), hallazgos, dur))
+
+    # El contraste que faltaba: lo PRESUPUESTADO contra lo REALMENTE hecho.
+    # Mientras el log solo imprimía la vuelta teórica (cupo ÷ ritmo), un
+    # vigilante corriendo al 4% de su capacidad se veía igual que uno sano.
+    # Si estas dos cifras se separan mucho, el cuello está en la red o en la
+    # latencia, no en el presupuesto — y subir HECTOR_FACTOR_RITMO no ayuda.
+    print("   presupuestado: %.0f req/s · real: %.1f req/s (%.0f%%)"
+          % (req_s, leidos / dur, 100.0 * (leidos / dur) / max(1, req_s)))
+    if progreso:
+        completas = sum(1 for p in progreso.values() if p.get("vueltas"))
+        print("   vueltas completas: %d tienda(s) · rotación guardada para la "
+              "próxima corrida" % completas)
     return hallazgos
 
 

@@ -77,7 +77,24 @@ UMBRAL_CATEGORIA = 0.35    # 35%-50%: SOLO electrónicos u hogar, ver arriba
 # hay dos fines de semana adentro y el número deja de bailar.
 MIN_OBSERVACIONES = 5
 VENTANA_REPETIR = 12 * 3600
-TOPE_FALLOS = 2        # fallos seguidos antes de descartar una URL
+# Fallos SEGUIDOS antes de sacar una URL del catálogo. Un éxito lo resetea
+# (ver `limpiar_fallo`), así que esto cuenta rachas, no fallos totales.
+#
+# Subido de 2 a 6 el 12-ago-2026. Con 2 se estaba borrando catálogo bueno: el
+# 11-ago el catálogo cayó de 439.375 a 360.863 fichas (-78.512) en un día, y
+# quedaron 138.861 URLs con exactamente 1 fallo, o sea a una racha de morir.
+# Entre ellas el 66,7% de Falabella — la tienda que MEJOR mide, con 72% de
+# cobertura. Una tienda que mide bien no tiene dos tercios de fichas basura:
+# lo que fallaba era la lectura, no la URL.
+#
+# El problema de fondo es que acá se mezclan dos cosas distintas: una URL de
+# sitemap que nunca fue una ficha (basura de verdad, hay que borrarla) y una
+# lectura que falló por timeout, bloqueo o falta de adaptador (la ficha está
+# bien, el que falla es el lector). Un 404/410 ya se trata aparte como
+# "muerta"; todo lo demás cae acá junto. Mientras esa distinción no exista,
+# 6 rachas seguidas —seis barridas, seis días— es el margen para no perder
+# catálogo por una mala tarde de una tienda.
+TOPE_FALLOS = 6
 
 ERROR = "error"
 OFERTA = "oferta"

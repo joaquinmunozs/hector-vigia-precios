@@ -6,6 +6,10 @@
 > lo que ya dice el código: repite lo que el código **no puede** decir.
 >
 > Última actualización: **11-ago-2026**.
+>
+> **El encargo técnico de las dos integraciones que faltan (MercadoPago e
+> Instagram) está en [`INTEGRACIONES.md`](INTEGRACIONES.md)** — endpoints,
+> credenciales y trampas conocidas, listo para implementar.
 
 ---
 
@@ -36,7 +40,7 @@ producto empieza a copiar descuentos anunciados, deja de tener razón de ser.
 |---|---|
 | Suscriptores pagando | **0** — el cobro está construido pero no lanzado |
 | Producto técnico | Funcionando, corriendo solo desde el 8-ago-2026 |
-| Lo que falta para vender | Un secret de Flow y encender la campaña |
+| Lo que falta para vender | Link de MercadoPago de Max + encender la campaña |
 
 ---
 
@@ -223,6 +227,28 @@ llegó a quedar en 3 de 44 tiendas.
 
 ## 4. Cobro — cómo entra la plata
 
+> ### ⚠️ CAMBIO DE RUMBO — 11-ago-2026
+>
+> **Ya NO se cobra con Flow.** La decisión es cobrar por **WhatsApp, mandando
+> un link de suscripción de MercadoPago** desde la cuenta de MP Developers de
+> **Max**.
+>
+> **Por qué cambió:** la campaña no va a mandar a una landing sino a WhatsApp
+> (ver §5 — es lo que baja el CAC de ~$12.000 a ~$5.000-6.200, y el CAC es el
+> problema central del negocio). Si la conversación ya está en WhatsApp, meter
+> una landing y una pasarela en el medio agrega dos pasos donde la gente se
+> cae. El link de MP se pega en el chat y se paga ahí mismo.
+>
+> **Qué implica para el código de `cobro/`:** el Worker, el KV y el cron de
+> vencidos **siguen sirviendo** — lo que cambia es quién avisa que alguien
+> pagó. Hay que reemplazar el webhook de Flow por el de MercadoPago y validar
+> su firma. El ciclo de vida del suscriptor, el link de invitación de un solo
+> uso y el `ban`+`unban` no cambian en nada.
+>
+> **Lo que sigue abajo describe el diseño con Flow.** Se deja porque el
+> razonamiento de por qué NO Stars, NO Khipu y NO InviteMember sigue valiendo,
+> y porque la arquitectura es la misma salvo el proveedor.
+
 ```
 Anuncio → landing → página de pago de Flow (alojada por Flow)
                           ↓ paga en CLP
@@ -377,14 +403,17 @@ Secrets que usa el scraper: `TELEGRAM_BOT_TOKEN`, `VIGIA_CHAT_ID`,
 
 ### Bloquea el lanzamiento
 
-1. **`FLOW_SECRET` en el Worker de cobro** y registrar la URL del webhook en
-   Flow. Sin esto no entra un peso.
-2. **Encender la campaña** con CTA a WhatsApp, no a la landing (ver §5).
+1. **Link de suscripción de MercadoPago**, desde la cuenta de MP Developers de
+   Max. Es lo que se le manda al cliente por WhatsApp. Sin esto no entra un
+   peso. (Reemplaza al plan anterior con Flow — ver el aviso en §4.)
+2. **Adaptar el Worker de `cobro/` al webhook de MercadoPago.** El resto del
+   Worker sirve igual: solo cambia quién avisa que alguien pagó.
+3. **Encender la campaña** con CTA a WhatsApp (ver §5).
 
 ### Importante pero no bloquea
 
-3. **Bajar el CAC.** Es el número que decide si el negocio existe.
-4. **Medir spdigital.cl.** 64.903 fichas descubiertas y solo 799 medidas
+4. **Bajar el CAC.** Es el número que decide si el negocio existe.
+5. **Medir spdigital.cl.** 64.903 fichas descubiertas y solo 799 medidas
    (1,2%). Es la tercera tienda más grande: desbloquearla sube la cobertura
    más que agregar cualquier tienda nueva.
 5. **Adaptador para hushpuppies.cl y vans.cl.** Descubren 3.190 fichas entre

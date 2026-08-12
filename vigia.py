@@ -232,14 +232,36 @@ def _objetivos(con, limite=None):
     pierde VELOCIDAD DE ROTACIÓN — que se nota y se corrige — en vez de perder
     productos completos sin que nadie se entere.
     """
+    # ── EL REPARTO DE ROLES (12-ago-2026) ──────────────────────────────────
+    #
+    # Desde que el vigilante cubre TODO el catálogo con precio conocido (ver
+    # `cargar_lista` en vigilante.py), refrescar fichas ya medidas dejó de ser
+    # trabajo de la barrida: el vigilante las relee cada 59 s las caras y cada
+    # ~96 min el resto, mucho más seguido de lo que la barrida podría.
+    #
+    # Lo que el vigilante NO puede hacer es incorporar una ficha nueva: su
+    # lista sale de `WHERE precio > 0`, así que una ficha descubierta pero
+    # nunca medida es invisible para él. Solo la barrida puede darle esa
+    # primera lectura, y son 185.651 fichas — la mitad del catálogo.
+    #
+    # Por eso el orden ahora pone PRIMERO lo que nunca se midió. Antes iba
+    # `ORDER BY p.tienda, ref DESC`, que además tenía un efecto no buscado:
+    # como ordenaba por tienda ANTES que por precio, los "caros" que
+    # `_con_rotacion` reserva no eran los caros del catálogo sino las
+    # primeras tiendas del alfabeto — el docstring de acá abajo prometía un
+    # orden por precio global que el SQL nunca hizo.
     filas = con.execute("""
         SELECT p.tienda, p.url,
                COALESCE(MAX(CASE WHEN p.precio > 0 THEN p.precio END), -1) AS ref
         FROM precios p
         GROUP BY p.url
-        ORDER BY p.tienda, ref DESC
+        ORDER BY (ref > 0) ASC, ref DESC
     """).fetchall()
     objetivos = [(f["tienda"], f["url"]) for f in filas]
+    sin_medir = sum(1 for f in filas if f["ref"] < 0)
+    if sin_medir:
+        print("  %d fichas sin medir van primero (son las que el vigilante "
+              "todavía no puede ver)" % sin_medir)
 
     tope = limite or TOPE_BARRIDA
     if tope and len(objetivos) > tope:
@@ -318,9 +340,17 @@ def barrida(con, avisar=True, limite=None, segundos_max=None):
 
     while procesados < total:
         if segundos_max and (time.time() - inicio) > segundos_max:
-            print("  (tope de %.1f h alcanzado, se corta con %d/%d — la próxima "
-                  "barrida retoma el resto por la rotación)"
-                  % (segundos_max / 3600, procesados, total))
+            # Ojo con lo que dice acá: la rotación solo existe si el catálogo
+            # pasa de TOPE_BARRIDA (si no, `_objetivos` la salta y no hay
+            # marcador que guarde dónde quedó). Cuando NO hay rotación, la
+            # próxima barrida empieza otra vez por el principio — que con el
+            # orden actual son las fichas sin medir, así que se retoma lo que
+            # importa igual, pero por el orden, no por la rotación.
+            print("  (tope de %.1f h alcanzado, se corta con %d/%d — %s)"
+                  % (segundos_max / 3600, procesados, total,
+                     "la próxima barrida retoma por la rotación"
+                     if len(objetivos) >= TOPE_BARRIDA
+                     else "la próxima vuelve a empezar por las fichas sin medir"))
             break
         try:
             estado, tienda, url, d = resultados.get(timeout=120)
