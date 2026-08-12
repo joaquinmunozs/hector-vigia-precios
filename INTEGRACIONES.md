@@ -53,6 +53,20 @@ queda guardada y MercadoPago cobra solo.
 
 ## Credenciales
 
+> ⚠️ **Corregido el 12-ago-2026.** Este documento daba por cumplido "Cuenta de
+> Instagram tipo Empresa ✅" y "Vinculada a una Página de Facebook ✅". **No lo
+> está** — la cuenta sigue siendo personal (lo confirmó Max al revisarlo).
+> Mientras no se convierta, la API de publicación no existe y **todo el bloque
+> de Instagram está bloqueado**. La conversión toma un minuto: app de Instagram
+> → Configuración → Tipo de cuenta y herramientas.
+>
+> Segunda corrección: el encargo exigía "foto disponible" para publicar, pero
+> **el scraper no guardaba la URL de la imagen** — `extractor.py` devolvía solo
+> nombre, precio, stock y fuente, y `precios` no tenía columna. El requisito
+> era imposible de cumplir tal como estaba escrito. Max ya lo construyó
+> (columna `precios.imagen` por migración), pero era un prerrequisito que este
+> documento no mencionaba.
+
 De la cuenta de **MercadoPago Developers de Max**, en
 <https://www.mercadopago.cl/developers/panel>:
 
