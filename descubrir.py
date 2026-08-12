@@ -22,6 +22,7 @@ las categorías que el propio sitemap lista.
 import gzip
 import os
 import re
+import threading
 import urllib.parse
 import urllib.request
 import urllib.robotparser
@@ -95,6 +96,41 @@ def _bajar_urllib(url, tiempo, cabeceras):
     return datos.decode("utf-8", "replace")
 
 
+# ── Una sesión por hilo, para no repetir el handshake TLS ──────────────────
+#
+# `_cffi.get()` suelto abre conexión TCP + handshake TLS en CADA petición. Un
+# handshake son dos vueltas de red antes de pedir el primer byte, y contra
+# tiendas chilenas eso es la mayor parte del tiempo de una lectura.
+#
+# MEDIDO el 12-ago-2026 (mediana de 6 lecturas por tienda, conexión nueva vs
+# sesión reutilizada):
+#
+#     construmart.cl   124 ms -> 57 ms   2,16x
+#     tricot.cl        504 ms -> 319 ms  1,58x
+#     salcobrand.cl    279 ms -> 197 ms  1,42x
+#     hites.com        625 ms -> 506 ms  1,23x
+#     antartica.cl     144 ms -> 158 ms  0,91x  (dentro del ruido)
+#     ------------------------------------------
+#     promedio         335 ms -> 248 ms  1,35x
+#
+# Es la mejora más barata que hay: como el throughput por hilo es 1/latencia,
+# bajar la latencia sube el ritmo en la misma proporción SIN pedirle una sola
+# petición más a la tienda. No toca `RITMO_SEGURO` ni el riesgo de bloqueo.
+#
+# Va por hilo (`threading.local`) porque una sesión de curl_cffi no es segura
+# de compartir entre hilos, y acá corren hasta 200 en paralelo. Cada hilo paga
+# UN handshake por tienda y reusa esa conexión el resto de su vida.
+_sesiones = threading.local()
+
+
+def _sesion():
+    s = getattr(_sesiones, "s", None)
+    if s is None:
+        s = _cffi.Session(impersonate=NAVEGADOR)
+        _sesiones.s = s
+    return s
+
+
 def bajar(url, tiempo=TIEMPO_LIMITE, cabeceras=None):
     """Baja una página. Prueba urllib y, si lo rechazan, imita a Chrome.
 
@@ -125,7 +161,7 @@ def bajar(url, tiempo=TIEMPO_LIMITE, cabeceras=None):
     except Exception:                      # noqa: BLE001
         if _cffi is None:
             raise
-    r = _cffi.get(url, impersonate=NAVEGADOR, timeout=tiempo, headers=todas)
+    r = _sesion().get(url, timeout=tiempo, headers=todas)
     if r.status_code >= 400:
         raise urllib.error.HTTPError(url, r.status_code, "rechazado", None, None)
     return r.text
