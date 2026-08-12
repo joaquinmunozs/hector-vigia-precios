@@ -217,6 +217,17 @@ def armar_texto(det, tienda):
         '<a href="%s">PRODUCTO</a>' % det["url"],
     ]
 
+    # El precio habitual, cuando difiere del mínimo de 30 días contra el que
+    # se anuncia la caída. Que difieran NO es un detalle técnico: significa
+    # que el producto estuvo más caro de lo normal en el último mes, que es
+    # justo lo que la Directiva Omnibus obliga a no esconder.
+    #
+    # Se muestra el número más chico como titular y el otro como contexto, no
+    # al revés: el titular tiene que ser el que aguanta que lo revisen.
+    habitual = det.get("habitual")
+    if habitual and habitual > det["referencia"]:
+        lineas.insert(4, "<i>habitualmente %s</i>" % _plata(habitual))
+
     if det.get("historico"):
         lineas += ["", "<b>Precio histórico</b> 📉"]
         # El historial viene de más reciente a más antiguo, que es como lo

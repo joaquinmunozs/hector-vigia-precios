@@ -419,11 +419,36 @@ def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None):
     # completo del retail — incluido el fin de semana, que es cuando más se
     # mueven los precios en Chile.
     cobertura = _dias_cubiertos(ts, ahora)
+    habitual = None
     if cobertura >= DIAS_MINIMOS_HISTORIAL:
-        # La MEDIANA, ponderada por cuánto duró cada precio: resiste que un
-        # error viejo quedara registrado, y que un precio inflado unos días
-        # pese lo mismo que el precio normal de tres semanas.
-        referencia, _ = _mediana_ponderada(con, url, ahora=ahora)
+        # ── LA CAÍDA SE MIDE CONTRA EL MÍNIMO DE 30 DÍAS (12-ago-2026) ────
+        #
+        # Antes se medía contra la mediana ponderada. La mediana es la
+        # herramienta correcta para saber CUÁNTO VALE el producto, pero la
+        # equivocada para anunciar CUÁNTO BAJÓ: si el precio estuvo inflado
+        # unos días, la mediana queda alta y el descuento sale exagerado.
+        #
+        # El caso real con el que se probó: producto de $100.000, inflado a
+        # $150.000 cinco días antes del Cyber, "rebajado" a $38.000.
+        #     contra la mediana ($150.000) -> -75%  ← lo que se anunciaba
+        #     contra el mínimo ($100.000)  -> -62%  ← lo que de verdad bajó
+        #
+        # -75% cruza UMBRAL_ERROR y el aviso salía como 🚨 ERROR DE PRECIO.
+        # -62% es una oferta real. Exagerar contamina justo el tópico donde
+        # el producto se juega su credibilidad: si "error de precio" empieza
+        # a incluir ofertas normales, deja de significar nada.
+        #
+        # Es además el criterio de la Directiva Omnibus, que ya se adoptó
+        # para la VENTANA de 30 días: el descuento se anuncia contra el
+        # precio más bajo de esos 30 días. Se usa el mismo número para la
+        # ventana y para la referencia, no dos criterios distintos.
+        #
+        # No abre un agujero nuevo: el filtro de más abajo YA exigía
+        # `precio_actual < min(previos)`, así que el mínimo siempre fue la
+        # vara para decidir si se avisa. Ahora también lo es para el número
+        # que se muestra.
+        habitual, _ = _mediana_ponderada(con, url, ahora=ahora)
+        referencia = min(previos) if previos else habitual
         con_historial = True
     else:
         referencia = _base_de(con, url)
@@ -469,6 +494,11 @@ def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None):
 
     # Con historial, además tiene que ser el más barato jamás visto: si ya
     # estuvo así antes, es una oferta que se repite, no un hallazgo.
+    #
+    # Desde que `referencia` ES ese mínimo, este filtro quedó redundante —
+    # un precio igual o mayor da caída <= 0 y no pasa el piso. Se deja
+    # escrito igual: es la regla de negocio, y si mañana alguien vuelve a
+    # cambiar la referencia, esto tiene que seguir siendo cierto.
     if con_historial and previos and precio_actual >= min(previos):
         return None
 
@@ -491,6 +521,11 @@ def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None):
         "categoria": categoria,
         "con_historial": con_historial,
         "historico": previos[:4],
+        # El precio HABITUAL (mediana ponderada por tiempo). No se usa para
+        # calcular la caída —ver el comentario en `evaluar`— pero sirve para
+        # mostrarlo: "bajó 62% contra su mínimo, y 75% contra lo que suele
+        # costar" es más información, no menos. `None` si no hay historial.
+        "habitual": int(habitual) if habitual else None,
     }
 
 
