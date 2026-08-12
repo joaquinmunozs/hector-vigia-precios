@@ -1,5 +1,13 @@
 # Héctor — vigía de precios
 
+> **Este repo es público a propósito, y los papeles del negocio no viven acá.**
+> GitHub Actions y los artifacts son gratis e ilimitados sólo en repos
+> públicos: con ~25.200 minutos al mes de corridas, pasarlo a privado costaría
+> del orden de US$186/mes. `CONTEXTO.md` (CAC, capital, márgenes) y
+> `HALLAZGOS.md` (infraestructura y accesos) están en el repo **privado**
+> `joaquinmunozs/ratia`. Si necesitas uno de los dos y no lo ves, pide acceso
+> ahí — no los vuelvas a subir acá.
+
 Vigila el retail chileno y avisa por Telegram cuando aparece **un error de
 precio** (el televisor que quedó en $9.990) o **una oferta real** (una caída
 grande contra el precio que ese producto venía teniendo de verdad, no contra

@@ -43,3 +43,16 @@ Thumbs.db
 proxy-tiendas/node_modules/
 proxy-tiendas/.wrangler/
 proxy-tiendas/.dev.vars
+
+# -- Documentos de negocio: NO van a este repo (12-ago-2026) ---------------
+# Este repo es PUBLICO, y tiene que serlo: GitHub Actions y los artifacts son
+# gratis e ilimitados solo en repos publicos. Moverlo a privado costaria unos
+# US$186/mes en minutos de Actions (~25.200 min/mes contra 2.000 gratis), que
+# a $2.990 por suscriptor son 62 suscriptores pagando solo el hosting.
+#
+# La conclusion no es esconder el codigo, es no publicar los papeles:
+# CONTEXTO.md documenta CAC, capital y margenes; HALLAZGOS.md la
+# infraestructura y los accesos. Los dos viven en el repo PRIVADO
+# joaquinmunozs/ratia.
+CONTEXTO.md
+HALLAZGOS.md
