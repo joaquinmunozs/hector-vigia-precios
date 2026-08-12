@@ -9,6 +9,11 @@ name: Sonda — ¿qué ve el runner?
 # le pregunta el runner: un 403 no se arregla con el mismo tipo de servidor.
 on:
   workflow_dispatch:
+    inputs:
+      dominios:
+        description: "Dominios a sondear, separados por coma"
+        required: false
+        default: "paris.cl,easy.cl"
 
 jobs:
   sondear:
@@ -46,11 +51,24 @@ jobs:
                   print("%-10s ERROR %s" % (dom, str(e)[:120]))
           PY
 
-      - name: Preguntarle a las tiendas (directo, sin proxy)
+      # Lee FICHAS REALES de a una, con pausa entre medio. Es la prueba que
+      # separa "nos bloquean" de "se ahogan bajo carga" — la misma que en el
+      # §6 de la bitácora del 11-ago demostró que spdigital no estaba
+      # bloqueada: 18 de 20 URLs "fallidas" leyeron bien de a una.
+      #
+      # Si de a una responde 200, el problema es el RITMO y se arregla en
+      # RITMO_SEGURO. Si de a una ya responde 403, bajar el ritmo no sirve
+      # de nada y hay que ir por el proxy.
+      - name: Leer fichas de a una (¿bloqueo o carga?)
+        env:
+          DOMINIOS: ${{ inputs.dominios }}
         run: |
           python - <<'PY'
+          import os
           import sys
+          import time
           sys.stdout.reconfigure(encoding="utf-8")
+          import descubrir
           from curl_cffi import requests as cffi
 
           try:
@@ -59,22 +77,47 @@ jobs:
               ip = "? (%s)" % str(e)[:40]
           print("IP de salida del runner:", ip, "\n")
 
-          objetivos = [
-              ("paris.cl   sitemap", "https://www.paris.cl/sitemap_index.xml"),
-              ("paris.cl   home",    "https://www.paris.cl/"),
-              ("easy.cl    sitemap", "https://www.easy.cl/sitemap.xml"),
-              ("dafiti.cl  sitemap", "https://www.dafiti.cl/sitemap.xml"),
-              ("homy.cl    sitemap", "https://www.homy.cl/sitemap.xml"),
-              ("falabella  sitemap (control, este SÍ funciona)",
-               "https://www.falabella.com/sitemap.xml"),
-          ]
-          for nombre, url in objetivos:
+          doms = [d.strip() for d in (os.environ.get("DOMINIOS") or "").split(",")
+                  if d.strip()]
+
+          for dom in doms:
+              print("=" * 66)
+              print(dom)
+              print("=" * 66)
               try:
-                  r = cffi.get(url, impersonate="chrome", timeout=30)
-                  cuerpo = r.content or b""
-                  cabeza = cuerpo[:70].decode("utf-8", "replace").replace("\n", " ")
-                  print("%-46s HTTP %-4s %6d KB  %s"
-                        % (nombre, r.status_code, len(cuerpo) // 1024, cabeza))
+                  urls = descubrir.fichas_de(dom, tope=40)
               except Exception as e:
-                  print("%-46s ERROR %s" % (nombre, str(e)[:100]))
+                  print("  no se pudieron descubrir fichas: %s\n" % str(e)[:120])
+                  continue
+              print("  fichas descubiertas: %d" % len(urls))
+              muestra = urls[:10]
+              if not muestra:
+                  print()
+                  continue
+
+              codigos = {}
+              for u in muestra:
+                  try:
+                      r = cffi.get(u, impersonate="chrome", timeout=30,
+                                   headers={"Accept-Language": "es-CL,es;q=0.9"})
+                      codigos[r.status_code] = codigos.get(r.status_code, 0) + 1
+                      print("    HTTP %-4s %6d KB  %s"
+                            % (r.status_code, len(r.content or b"") // 1024,
+                               u[:78]))
+                  except Exception as e:
+                      codigos["ERR"] = codigos.get("ERR", 0) + 1
+                      print("    ERROR %-38s %s" % (str(e)[:38], u[:60]))
+                  time.sleep(1.2)   # de a una y sin apuro: ese es el punto
+
+              ok = codigos.get(200, 0)
+              print("\n  resumen: %s" % codigos)
+              if ok == len(muestra):
+                  print("  → LEE PERFECTO de a una. El problema es el RITMO, "
+                        "no un bloqueo:\n    bajar su valor en RITMO_SEGURO.\n")
+              elif ok == 0:
+                  print("  → NO lee ni de a una. Es BLOQUEO: bajar el ritmo no "
+                        "sirve,\n    hay que pasarla por el proxy.\n")
+              else:
+                  print("  → mixto (%d/%d): mirar los códigos de arriba.\n"
+                        % (ok, len(muestra)))
           PY
