@@ -70,9 +70,16 @@ su `offers.price`. `_de_jsonld` solo aceptaba `product` y `book`.
 El arreglo extiende el descenso que ya hacía por `@graph`. **Verificado en vivo:
 hushpuppies $29.990, vans $44.990.**
 
-Urgía más de lo que parece: con `TOPE_FALLOS = 2`, cada barrida purgaba esas
-3.190 URLs del catálogo y el descubrimiento del lunes las volvía a agregar. Un
-ciclo que gastaba peticiones y no dejaba nada.
+Urgía más de lo que parecía: con el `TOPE_FALLOS = 2` que había entonces, cada
+barrida purgaba esas 3.190 URLs y el descubrimiento del lunes las volvía a
+agregar — un ciclo que gastaba peticiones y no dejaba nada.
+
+Llegaste a la misma conclusión por otro camino en `329fd2d` (subir `TOPE_FALLOS`
+a 6 tras ver caer el catálogo de 439.375 a 360.863 fichas en un día). Vale
+notar que las dos cosas se refuerzan: subir el tope evita perder catálogo bueno,
+y arreglar el extractor quita de raíz el motivo por el que esas fichas fallaban.
+Con las dos, hushpuppies y vans dejan de fallar en vez de solo tardar más en
+morir.
 
 ### Entidades HTML crudas en los nombres
 
@@ -189,6 +196,11 @@ lectura — la barrida no le llega. Buscar el problema en el extractor es buscar
 donde no está.
 
 ### La rotación de la barrida dejó de actuar
+
+> Nota: esto se escribió mirando `master` antes de `329fd2d`. Ese commit tocó el
+> vigilante, no `_objetivos` de `vigia.py`, así que lo de abajo sigue en pie —
+> pero conviene releerlo con tu cambio de hilos ya aplicado, porque el ritmo
+> real de la barrida cambia y con él la cuenta de las 7,7 h.
 
 `TOPE_BARRIDA` está en `450_000`, por encima del catálogo (360.863). Eso hace
 que `len(objetivos) > tope` sea falso y **`_con_rotacion` no se llame nunca**,
