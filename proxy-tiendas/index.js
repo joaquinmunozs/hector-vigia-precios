@@ -17,15 +17,17 @@
 //   1. token compartido en la cabecera `x-hector-token` (secreto de Cloudflare)
 //   2. lista blanca de dominios — solo las tiendas que de verdad están bloqueadas
 //
-// tottus.cl se agrega el 12-ago-2026. Venía dando 0,1% de éxito en producción
-// (84 lecturas buenas contra 96.120 rechazos) y se leía como exceso de ritmo.
-// No lo era: la sonda 31623034286 leyó 10 fichas DE A UNA, con 1,2 s entre
-// medio, desde el runner (172.203.7.56) → 403 en las 10. Es bloqueo por IP,
-// igual que paris y easy, y bajarle el ritmo no habría cambiado nada.
+// tottus.cl SE PROBÓ Y NO SIRVE — no volver a agregarlo sin leer esto.
+// El 12-ago-2026 se agregó pensando que era el mismo caso que paris y easy.
+// No lo es: tottus rechaza también al edge de Cloudflare. Verificado con la
+// sonda 31623549818, ya con el Worker desplegado y la tienda en POR_PROXY:
+// 403 en las 10 fichas por el camino real. Desde la casa de Joaquín esa misma
+// ficha da 200 con 1,06 MB, así que es bloqueo por IP — pero de un rango más
+// ancho que el de Azure, y el edge de Cloudflare cae adentro.
+// Dejarlo acá solo gastaba cuota del Worker para seguir recibiendo 403.
 const PERMITIDOS = new Set([
   "paris.cl", "www.paris.cl",
   "easy.cl", "www.easy.cl",
-  "tottus.cl", "www.tottus.cl",
 ]);
 
 export default {

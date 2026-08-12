@@ -143,25 +143,38 @@ RITMO_SEGURO = {
     #
     # Se queda en el `_por_defecto` de 5.0, que es conservador y funciona.
     # Subirlo requiere medirlo con fichas rotativas, no con una sola.
-    # tottus BAJADA de 49.0 a 3.0 el 12-ago-2026, y el motivo NO es tottus.
+    # ── tottus: NOS BLOQUEA, y el proxy NO lo resuelve (12-ago-2026) ────────
     #
-    # Desde el 12-ago va por el Worker de Cloudflare (`proxy-tiendas/`) porque
-    # nos bloquea por IP: la sonda 31623034286 leyó 10 fichas de a una, con
-    # 1,2 s entre medio, y dio 403 en las 10. Ese era el origen de sus 96.120
-    # rechazos, no el ritmo.
+    # Bajada de 49.0 a 1.0, que es contención de daño y no un arreglo.
     #
-    # Pero al pasar por el proxy el techo deja de ser "cuánto aguanta tottus"
-    # y pasa a ser LA CUOTA DEL WORKER: 100.000 peticiones/día en el plan
-    # gratis. A 49 × 0,35 = 17 req/s durante 3,4 h serían ~208.000 peticiones
-    # en UNA corrida, y hay 4 corridas al día. Se pagaría por un descuido de
-    # configuración, no por una decisión.
+    # Venía con 84 lecturas buenas contra 96.120 rechazos (0,1%) — el 65% de
+    # todos los rechazos del sistema. El log la marcaba "BAJARLE EL RITMO" y
+    # eso estaba equivocado: la sonda 31623034286 leyó 10 fichas DE A UNA, con
+    # 1,2 s entre medio, y dio 403 en las 10. No es ritmo, es bloqueo.
     #
-    #   3.0 × 0,35 = 1,05 req/s → ~12.900 por corrida → ~51.500/día
+    # Se probaron las tres salidas conocidas, en orden de costo:
     #
-    # Eso deja la mitad de la cuota libre para paris y easy. Si algún día se
-    # paga el plan de $5/mes, este número se puede subir; mientras tanto es el
-    # presupuesto el que manda, no la tienda.
-    "tottus.cl": 3.0,
+    #   1. Worker de Cloudflare (lo que destrabó paris y easy) → NO SIRVE.
+    #      Verificado con la sonda 31623549818 ya con tottus en POR_PROXY y el
+    #      Worker desplegado: 403 en las 10 por el camino real. Rechaza también
+    #      al edge de Cloudflare. Se revirtió para no gastar cuota al pedo.
+    #   2. Cabecera `Referer`, que fue lo que destrabó falabella → no aplica:
+    #      desde una IP no bloqueada la ficha ya da 200 sin ella.
+    #   3. La API interna del grupo Falabella
+    #      (`/s/browse/v1/product/cl?productId=N`), que es de donde se saca el
+    #      precio de falabella.com → responde 200 pero con
+    #      `{"responseType":"NOT_FOUND"}` para los dos IDs de la URL de tottus.
+    #      El catálogo de tottus no está en esa API.
+    #
+    # Lo que sí se sabe: desde la casa de Joaquín la misma ficha da 200 con
+    # 1,06 MB. Es bloqueo por rango de IP, y alcanza a Azure y a Cloudflare.
+    # Salir de esto cuesta plata (proxy residencial) o cambiar de dónde corre.
+    # Es de los pocos casos donde pagar está justificado — pero es decisión de
+    # Joaquín, no un cambio que se mete de contrabando en un commit.
+    #
+    # Mientras tanto 1.0 × 0,35 = 0,35 req/s: sigue intentando por si el
+    # bloqueo se levanta, sin volver a envenenar la tabla de salud.
+    "tottus.cl": 1.0,
     "adidas.cl": 40.0,
     "paris.cl": 16.0,
     # spdigital se queda bajo a propósito: no es que no se pueda leer (18 de
