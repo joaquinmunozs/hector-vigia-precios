@@ -353,7 +353,8 @@ def barrida(con, avisar=True, limite=None, segundos_max=None):
             det = (baseprecios.evaluar(con, url, precio,
                                        nombre=d["nombre"], tienda=tienda)
                    if d.get("hay_stock", True) else None)
-            baseprecios.guardar(con, tienda, url, d["nombre"], precio)
+            baseprecios.guardar(con, tienda, url, d["nombre"], precio,
+                                imagen=d.get("imagen"))
             # Primera lectura del producto: se fija como su referencia inicial.
             if not baseprecios._base_de(con, url):
                 baseprecios.fijar_base(con, url, precio, "inicial")

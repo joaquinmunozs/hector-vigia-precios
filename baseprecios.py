@@ -149,6 +149,16 @@ def _migrar(con):
     la columna `tipo`.
     """
     faltantes = {
+        # La foto del producto. Va acá y no en el ESQUEMA porque la base de
+        # producción ya existe (300 MB de historial) y `CREATE TABLE IF NOT
+        # EXISTS` no le agrega columnas a una tabla que ya está.
+        #
+        # Se guarda por lectura, igual que el nombre, en vez de en una tabla
+        # aparte: es un campo del producto tal como se vio ese día, y las
+        # tiendas cambian la foto sin avisar. La última lectura manda.
+        "precios": [
+            ("imagen", "TEXT"),
+        ],
         "alertas": [
             ("tipo", "TEXT NOT NULL DEFAULT 'error'"),
             # NULL = todavía no se sabe si la tienda corrigió el precio.
@@ -191,10 +201,12 @@ def abrir():
     return con
 
 
-def guardar(con, tienda, url, nombre, precio, cuando=None):
+def guardar(con, tienda, url, nombre, precio, cuando=None, imagen=None):
     con.execute(
-        "INSERT INTO precios (tienda, url, nombre, precio, visto_en) VALUES (?,?,?,?,?)",
-        (tienda, url, nombre or "", int(precio), int(cuando or time.time())))
+        "INSERT INTO precios (tienda, url, nombre, precio, visto_en, imagen) "
+        "VALUES (?,?,?,?,?,?)",
+        (tienda, url, nombre or "", int(precio), int(cuando or time.time()),
+         imagen or None))
 
 
 def fijar_base(con, url, precio, origen="inicial", cuando=None):

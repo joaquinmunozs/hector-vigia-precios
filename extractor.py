@@ -27,6 +27,7 @@ ORDEN:
 """
 import json
 import re
+import urllib.parse
 
 # Precio mínimo creíble en CLP. Bajo esto casi siempre es basura del HTML
 # (un "12" de una fecha, un id, un contador), no un precio de verdad.
@@ -81,9 +82,20 @@ def _de_jsonld(html):
             continue
         pila = datos if isinstance(datos, list) else [datos]
         # Los sitios suelen anidar el producto dentro de @graph.
+        #
+        # Y las tiendas sobre Shopify publican un `ProductGroup` cuyo precio NO
+        # está en el nodo de arriba (su `offers` viene en null) sino dentro de
+        # `hasVariant`, una por talla o color, cada una un `Product` completo.
+        # Sin descender ahí, hushpuppies.cl y vans.cl descubrían 3.190 fichas y
+        # medían CERO: el precio estaba en el HTML y se descartaba el bloque
+        # entero por el `@type`. Verificado en vivo el 11-ago-2026.
         for d in list(pila):
-            if isinstance(d, dict) and isinstance(d.get("@graph"), list):
+            if not isinstance(d, dict):
+                continue
+            if isinstance(d.get("@graph"), list):
                 pila.extend(d["@graph"])
+            if isinstance(d.get("hasVariant"), list):
+                pila.extend(d["hasVariant"])
         for o in pila:
             if not isinstance(o, dict):
                 continue
@@ -113,7 +125,68 @@ def _de_jsonld(html):
                     "precio": precio,
                     "hay_stock": "outofstock" not in disp.lower().replace("_", ""),
                     "fuente": "json-ld",
+                    "imagen": _url_imagen(o.get("image")),
                 }
+    return None
+
+
+def _url_imagen(valor):
+    """Normaliza el campo `image` de JSON-LD, que llega de cuatro formas.
+
+    schema.org lo permite como string, como lista de strings, como ImageObject
+    (un dict con `url`), o como lista de ImageObject. Asumir una sola forma
+    dejaba sin foto a la mitad de las tiendas.
+    """
+    if isinstance(valor, list):
+        valor = valor[0] if valor else None
+    if isinstance(valor, dict):
+        valor = valor.get("url") or valor.get("contentUrl")
+    if not isinstance(valor, str):
+        return None
+    valor = valor.strip()
+    # Protocolo relativo (`//cdn.tienda.cl/x.jpg`): Instagram baja la imagen por
+    # su cuenta, así que una URL sin esquema le falla.
+    if valor.startswith("//"):
+        valor = "https:" + valor
+    if not valor.startswith("http"):
+        return None
+
+    # "Empieza con http" NO alcanza. spdigital.cl publica, de verdad,
+    # `<meta property="og:image" content="https:undefined">` — un bug de su
+    # JavaScript que deja una URL con forma válida y host inexistente. Sin esta
+    # comprobación se guarda como si fuera una foto y el carrusel falla recién
+    # al publicar, cuando Instagram no puede bajarla.
+    try:
+        host = urllib.parse.urlsplit(valor).netloc.lower()
+    except ValueError:
+        return None
+    if "." not in host or host.startswith(".") or host.endswith("."):
+        return None
+    if any(b in host for b in ("undefined", "null", "localhost", "example.")):
+        return None
+    return valor
+
+
+_OG_IMAGEN = (
+    r'property="og:image"\s+content="([^"]+)"',
+    r'content="([^"]+)"\s+property="og:image"',
+    r'name="twitter:image"\s+content="([^"]+)"',
+)
+
+
+def _imagen_de_meta(html):
+    """La foto principal desde las meta tags.
+
+    Se usa como respaldo para las estrategias que no traen imagen propia. Es
+    justamente la que la tienda eligió para que se vea al compartir el link,
+    así que es la mejor candidata disponible sin escarbar el HTML.
+    """
+    for patron in _OG_IMAGEN:
+        m = re.search(patron, html, re.I)
+        if m:
+            u = _url_imagen(m.group(1))
+            if u:
+                return u
     return None
 
 
@@ -328,4 +401,27 @@ def extraer(html):
                 ", ".join("%s=%d" % (h["fuente"], h["precio"]) for h in hallazgos),
                 "probable precio por unidad de medida"))
 
-    return hallazgos[0]
+    elegido = hallazgos[0]
+
+    # LA FOTO ES UN REQUISITO DEL CARRUSEL, NO UN ADORNO
+    #
+    # Los carruseles de Instagram se armarán con la foto real del producto (ver
+    # INTEGRACIONES.md §5, que exige "foto disponible" para publicar). Nada de
+    # esto se guardaba: el extractor devolvía solo nombre y precio, así que no
+    # había imagen que poner y el requisito era imposible de cumplir.
+    #
+    # No se falla si no hay foto. Un producto sin imagen sigue sirviendo para el
+    # historial y para el aviso de Telegram, que es el producto que se cobra;
+    # solo queda fuera del carrusel.
+    if not elegido.get("imagen"):
+        # Se busca en OTRO hallazgo antes de caer a las meta tags: si el JSON-LD
+        # de una variante trajo la foto, es más específica que la de og:image
+        # (que a veces es el logo de la tienda).
+        for h in hallazgos:
+            if h.get("imagen"):
+                elegido["imagen"] = h["imagen"]
+                break
+    if not elegido.get("imagen"):
+        elegido["imagen"] = _imagen_de_meta(html)
+
+    return elegido

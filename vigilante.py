@@ -363,7 +363,8 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
             det = (baseprecios.evaluar(con, url, precio,
                                        nombre=d["nombre"], tienda=tienda)
                    if d.get("hay_stock", True) else None)
-            baseprecios.guardar(con, tienda, url, d["nombre"], precio)
+            baseprecios.guardar(con, tienda, url, d["nombre"], precio,
+                                imagen=d.get("imagen"))
             if not baseprecios._base_de(con, url):
                 baseprecios.fijar_base(con, url, precio, "inicial")
             # Si esta URL tenía un error sin resolver y el precio ya volvió a
