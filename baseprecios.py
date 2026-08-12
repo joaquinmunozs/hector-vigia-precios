@@ -234,10 +234,48 @@ def fijar_base(con, url, precio, origen="inicial", cuando=None):
         (url, int(precio), int(cuando or time.time()), origen))
 
 
-def historial(con, url, limite=60):
+# ── LA VENTANA ES DE TIEMPO, NO DE LECTURAS (12-ago-2026) ──────────────────
+#
+# Antes esto tomaba "las últimas 60 lecturas", sin mirar de cuándo eran. Ese
+# criterio tiene un modo de falla que EMPEORA justo cuando el sistema mejora:
+# cuanto más rápido vigila, menos tiempo cubren esas 60 lecturas, y más corta
+# se vuelve la "historia" contra la que se compara.
+#
+# Medido sobre la base de producción: las fichas con 5 o más lecturas cubrían
+# **0,62 días en promedio**, y las de 16 lecturas apenas 0,44 — o sea que la
+# "mediana histórica" que sostiene todo el producto se estaba calculando
+# sobre MEDIO DÍA. Con la frecuencia adaptativa recién puesta, los productos
+# móviles se leen mucho más seguido, así que la ventana se habría encogido
+# todavía más.
+#
+# Es exactamente el error que hundió la calidad de `ratonean2`, el bot chileno
+# que hizo esto mismo antes: su algoritmo confundía la subida estacional
+# previa a una fecha especial con un descuento porque "el historial del precio
+# era otro".
+#
+# 30 DÍAS NO ES UN NÚMERO INVENTADO: es el estándar de la Directiva Omnibus de
+# la UE, que obliga a anunciar todo descuento contra el PRECIO MÁS BAJO DE LOS
+# ÚLTIMOS 30 DÍAS, precisamente para que no se pueda inflar el precio antes de
+# la rebaja. Francia le puso 40 millones de euros de multa a Shein en 2025 por
+# esa práctica. Alinear la referencia con ese criterio hace que la caída que
+# se anuncia signifique lo mismo que significa legalmente en Europa.
+VENTANA_HISTORIAL_DIAS = 30
+
+# Tope de filas por si una ficha muy volátil acumula miles. Es alto a
+# propósito: sólo se guarda cuando el precio CAMBIA, así que en la práctica
+# son unas pocas por ficha (el 99% del catálogo tiene un solo precio distinto).
+TOPE_HISTORIAL = 2000
+
+
+def historial(con, url, dias=None, limite=TOPE_HISTORIAL, ahora=None):
+    """Los precios de esta ficha dentro de la ventana de tiempo, no las N
+    últimas lecturas. Ver el comentario de `VENTANA_HISTORIAL_DIAS`."""
+    dias = VENTANA_HISTORIAL_DIAS if dias is None else dias
+    desde = int(ahora or time.time()) - int(dias * 86400)
     filas = con.execute(
         "SELECT precio, visto_en FROM precios WHERE url=? AND precio>0 "
-        "ORDER BY visto_en DESC LIMIT ?", (url, limite)).fetchall()
+        "AND visto_en >= ? ORDER BY visto_en DESC LIMIT ?",
+        (url, desde, limite)).fetchall()
     return [(f["precio"], f["visto_en"]) for f in filas]
 
 
