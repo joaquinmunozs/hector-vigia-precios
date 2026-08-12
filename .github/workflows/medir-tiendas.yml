@@ -1,0 +1,53 @@
+name: Medir el ritmo seguro de las tiendas
+
+# Diagnóstico, no producción. Solo a mano.
+#
+# POR QUÉ EN ACTIONS Y NO EN EL PC DE CASA
+# ---------------------------------------------------------------------------
+# `medir_limites.py` sube el ritmo por escalones hasta que la tienda se
+# incomoda. Su propio encabezado lo advierte: "esa IP es la de la casa de
+# Joaquín", y una IP marcada en Falabella o Hites es la IP desde la que él
+# compra. El runner de GitHub es desechable y cambia cada corrida.
+#
+# Además mide lo que importa: el ritmo que aguanta la tienda DESDE DONDE
+# CORRE LA BARRIDA. Medirlo desde una conexión doméstica chilena daría un
+# número que no aplica a producción — otra latencia y otra reputación de IP.
+on:
+  workflow_dispatch:
+    inputs:
+      tiendas:
+        description: "Tiendas a medir, separadas por coma (vacío = todas)"
+        type: string
+        default: "hites,tricot,salcobrand"
+
+# No corre a la vez que la barrida: medir el techo de una tienda mientras
+# Héctor le está pegando con 200 hilos mide las dos cosas sumadas y arruina
+# el número.
+concurrency:
+  group: hector-barrida
+  cancel-in-progress: false
+
+jobs:
+  medir:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      # `medir_limites.py` toma las tiendas como argumentos sueltos, así que
+      # el input separado por comas se convierte a espacios. Sin comillas
+      # alrededor de $LISTA, a propósito: hacen falta como argumentos
+      # separados, no como uno solo.
+      - name: Medir
+        env:
+          TIENDAS: ${{ github.event.inputs.tiendas }}
+        run: |
+          LISTA=$(echo "$TIENDAS" | tr ',' ' ')
+          echo "midiendo: ${LISTA:-todas}"
+          python -u medir_limites.py $LISTA

@@ -72,10 +72,28 @@ OBJETIVOS = {
     "puma": ("https://cl.puma.com/pack-de-3-pares-de-calcetines-de-deporte-880355-02.html", {}),
     "reuse": ("https://www.reuse.cl/products/hp-15-da0021cy-touch-rosado-intel-i5-8250-quad-core-8gb-1tb-reacondicionado", {}),
     "rosen": ("https://www.rosen.cl/camas-y-colchones.html", {}),
-    "salcobrand": ("https://salcobrand.cl/sitemaps/salcobrand/sitemap2.xml.gz", {}),
+    # ── Corregidos el 12-ago-2026 ──────────────────────────────────────────
+    # Estas tres son las que "fallaron la medición" y por eso quedaron
+    # corriendo con el `_por_defecto` de 5.0 req/s, que nunca se midió. No
+    # fallaban por la tienda: los objetivos estaban mal.
+    #
+    #   · salcobrand apuntaba a un SITEMAP .xml.gz, no a una ficha. Medir el
+    #     ritmo contra un .gz de sitemap no dice nada del ritmo real de una
+    #     ficha, que es lo que la barrida pide.
+    #   · tricot apuntaba a una ficha que ya no existe (404).
+    #   · hites directamente no estaba en la lista.
+    #
+    # Las tres URLs de abajo salen de la base de producción: son las fichas
+    # con MÁS lecturas exitosas de cada tienda, o sea las que con más certeza
+    # existen y se leen bien.
+    #
+    # Importa porque estas tres son hoy el cuello del ciclo de ofertas: a 5.0
+    # req/s, hites (28.467 fichas) sola se lleva 300 min de las 5 h.
+    "hites": ("https://www.hites.com/aire-acondicionado-split-midea-breezeless9k-9000-btu-944110001.html", {}),
+    "salcobrand": ("https://salcobrand.cl/products/zyprexa-zydis-r-olanzapina-5mg-14-tabletas-dispersables", {}),
     "santaisabel": ("https://www.santaisabel.cl/ablandador-klaeren-250-g-255454/p", {}),
     "sportline": ("https://sportline.cl/products/guantes-de-box-powerlock-2-tr-hook-loop-negro-acero", {}),
-    "tricot": ("https://www.tricot.cl/jeans-hombre-cl%C3%A1sico-31516.html", {}),
+    "tricot": ("https://www.tricot.cl/zapato-hombre-outdoor-410638.html", {}),
     "underarmour": ("https://www.underarmour.cl/products/zapatilla-infinite-mujer-verde", {}),
     "vans": ("https://www.vans.cl/products/zapatillas-authentic-black-black-vn-3uvn000ee3bka0042", {}),
     "winnerchile": ("https://winnerchile.cl/products/picadora-electrica-4-en-1-portatil", {}),
