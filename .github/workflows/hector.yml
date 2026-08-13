@@ -32,6 +32,10 @@ on:
         description: "Forzar la barrida completa aunque no sean las 00:00 UTC"
         type: boolean
         default: false
+      limpiar_pum:
+        description: "Sacar de la base los precios que eran precio por unidad de medida"
+        type: boolean
+        default: false
 
 # Si el cron se atrasa y dispara una corrida nueva mientras la anterior sigue
 # escribiendo, la nueva ESPERA en la cola.
@@ -112,6 +116,26 @@ jobs:
             echo "base recuperada: $(du -h precios.db | cut -f1)"
           else
             echo "sin base previa — esta corrida va a descubrir el catálogo desde cero"
+          fi
+
+      # ── LIMPIEZA DE UNA VEZ, A MANO ───────────────────────────────────────
+      #
+      # Va ACÁ dentro y no en un workflow aparte por una razón concreta: la
+      # base vive como artifact de ESTE workflow, y el paso de arriba busca
+      # la corrida anterior de `hector.yml`. Una limpieza que corriera en otro
+      # workflow subiría su artifact a otro sitio y Héctor nunca lo vería —
+      # se habría limpiado una copia que nadie usa.
+      #
+      # Corre antes de `correr.py` para que la barrida de esta misma corrida
+      # ya vuelva a leer bien esas fichas, y el artifact que se sube al final
+      # salga limpio.
+      - name: Limpiar los precios por unidad de medida
+        if: github.event.inputs.limpiar_pum == 'true'
+        run: |
+          if [ -f precios.db ]; then
+            python -u limpiar_pum.py --confirmar
+          else
+            echo "sin base previa: no hay nada que limpiar"
           fi
 
       # Los cuatro tópicos van acá. Si faltan ELECTRONICOS y HOGAR, esos dos
