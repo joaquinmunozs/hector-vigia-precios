@@ -21,10 +21,25 @@ EL CASO QUE MÁS IMPORTA
 Un -60% en un notebook tiene que salir DOS VECES: en Ofertas reales y en
 Electrónicos. Ese duplicado es lo que se pidió explícitamente, y es lo más
 fácil de romper sin darse cuenta al tocar el ruteo.
+
+HAY QUE SEMBRAR HISTORIAL (13-ago-2026)
+------------------------------------------------------------------------------
+Esta prueba llevaba días fallando 5 de 12 casos y no era un bug del producto:
+sólo llamaba a `fijar_base` y no guardaba ni una lectura. Sin lecturas,
+`evaluar` calcula `con_historial=False`, y ahí manda la regla del 11-ago —
+"una oferta sin historial no se avisa, sólo los errores". Resultado: todo lo
+que caía menos del 70% devolvía `None` y la prueba lo leía como "el ruteo
+está roto". Los únicos casos que pasaban eran el error de -80% y los que
+esperaban "(nada)", o sea pasaban por el motivo equivocado.
+
+Ahora cada caso siembra 30 días de historial al precio base, que es la
+situación en la que el ruteo por categoría de verdad corre. La regla de "sin
+historial" se prueba aparte, al final, que es donde corresponde.
 """
 import os
 import sys
 import tempfile
+import time
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -60,24 +75,52 @@ CASOS = [
     ("Refrigerador No Frost 400L", "abc.cl",
      500_000, 200_000, ["4", "38"]),                 # -60%: DUPLICADO
 
-    # ── Sin categoría: el piso sigue siendo 50% ──────────────────────────
+    # ── Sin categoría: el piso es 40%, no 50% ────────────────────────────
+    #
+    # Estos cuatro esperaban "(nada)" y llevaban días marcando falso fallo.
+    # El piso de Ofertas bajó de 0,50 a 0,40 el 11-ago-2026 (commit 9912b94,
+    # "ropa, zapatillas y todo lo que no es electrónica ni hogar entra desde
+    # ahí"), y ni esta tabla ni la de rangos de `alertas.py` se actualizaron.
     ("Zapatillas Nike Air Max 90", "falabella.com",
-     100_000, 60_000, []),                           # -40%: NO se avisa
+     100_000, 60_000, ["4"]),                        # -40%: justo en el piso
     ("Zapatillas Nike Air Max 90", "falabella.com",
      100_000, 40_000, ["4"]),                        # -60%: solo ofertas
     ("Cien años de soledad", "antartica.cl",
-     20_000, 12_000, []),                            # -40% en un libro: nada
+     20_000, 12_000, ["4"]),                         # -40% en un libro
 
     # ── Los que fallaron contra datos reales ─────────────────────────────
+    #
+    # Acá lo que se prueba es que NO caigan en un tópico de categoría: si
+    # `clasificar` se equivocara, la funda saldría en Electrónicos ("36") y
+    # el sostén en Hogar ("38"). Que además vayan a Ofertas es correcto —
+    # son caídas de 40% de productos sin categoría.
     ("Funda Con Teclado Para Samsung S9", "falabella.com",
-     45_000, 27_000, []),                            # accesorio: nada
+     45_000, 27_000, ["4"]),                         # accesorio, no electrónica
     ("Sosten Encaje Copa C", "falabella.com",
-     20_000, 12_000, []),                            # no es cristalería
+     20_000, 12_000, ["4"]),                         # "copa" no es cristalería
     ("Zapatillas de Running Galaxy 7", "falabella.com",
-     54_990, 33_000, []),                            # no es un Samsung
+     54_990, 33_000, []),                            # no es un Samsung, y -39,99%
     ("Cargador Rápido 45W", "falabella.com",
-     8_990, 5_000, []),                              # bajo el piso de precio
+     8_990, 5_000, []),                              # ahorro de $3.990: bajo el piso
 ]
+
+
+DIA = 86400
+
+
+def _sembrar(con, tienda, url, nombre, base):
+    """30 días de lecturas al precio base.
+
+    Hacen falta al menos `DIAS_MINIMOS_HISTORIAL` días de observación real
+    para que `evaluar` se crea la referencia; con menos, sólo salen errores
+    y el ruteo por categoría nunca llega a ejecutarse. Todas al mismo precio
+    a propósito: así el mínimo de 30 días ES el precio base y la caída que
+    mide la prueba es exactamente la que dice la tabla.
+    """
+    ahora = int(time.time())
+    for d in range(30, 0, -1):
+        baseprecios.guardar(con, tienda, url, nombre, base,
+                            cuando=ahora - d * DIA)
 
 
 def main():
@@ -93,6 +136,7 @@ def main():
         # ventana anti-repetición de 12 h.
         url = "https://%s/p/%d" % (tienda, i)
         baseprecios.fijar_base(con, url, base)
+        _sembrar(con, tienda, url, nombre, base)
 
         det = baseprecios.evaluar(con, url, nuevo, nombre=nombre, tienda=tienda)
         obtenido = [d for d in alertas.destinos(det) if d] if det else []

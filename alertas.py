@@ -19,7 +19,7 @@ porcentaje de caída, no se asigna a mano.
 CUATRO TÓPICOS, Y UN MENSAJE PUEDE IR A DOS
 ------------------------------------------------------------------------------
   🚨 Errores de precio  -> caída 70% a 99%   (cualquier producto)
-  🏷️ Ofertas reales     -> caída 50% a 70%   (cualquier producto)
+  🏷️ Ofertas reales     -> caída 40% a 70%   (cualquier producto)
   📱 Electrónicos       -> caída 35% a 70%   (solo electrónica)
   🏠 Hogar              -> caída 35% a 70%   (solo hogar)
 
@@ -27,17 +27,22 @@ Los dos primeros van separados a propósito: quien paga por errores de precio
 no quiere que le llegue una oferta del 55% mezclada, y quien busca ofertas no
 necesita que le suene el teléfono a las 4 AM por un error que dura 20 minutos.
 
-EL DUPLICADO ES INTENCIONAL (8-ago-2026)
+EL DUPLICADO ES INTENCIONAL, PERO SOLO DESDE EL 60% (11-ago-2026)
 ------------------------------------------------------------------------------
-Un hallazgo de categoría entre 50% y 70% sale DOS VECES: en Ofertas reales y
-en su tópico de categoría. No es un bug ni un descuido — es lo que se pidió:
-quien sigue solo Electrónicos no debería perderse un -60% en un notebook por
-no estar mirando el tópico general, y quien sigue solo Ofertas tampoco.
+Un hallazgo de categoría sobre el 60% sale DOS VECES: en Ofertas reales y en
+su tópico de categoría. No es un bug ni un descuido — quien sigue solo
+Electrónicos no debería perderse un -60% en un notebook por no estar mirando
+el tópico general, y quien sigue solo Ofertas tampoco.
+
+Entre 35% y 60% va SOLO a su tópico de categoría. El corte original era 50%
+y se subió a 60% el 11-ago porque Ofertas terminaba siendo la suma de todos
+los tópicos, y un tópico saturado se silencia. Ver `destinos` y
+`UMBRAL_DUPLICAR`, que es donde vive el número.
 
 Sobre el 70% NO se duplica: ahí ya es error de precio y va únicamente al
 tópico de errores. El tope de los tópicos de categoría es 69%.
 
-Nada bajo 35% llega acá, y entre 35% y 50% solo llega si es de categoría:
+Nada bajo 35% llega acá, y entre 35% y 40% solo llega si es de categoría:
 ese corte lo pone `baseprecios.evaluar`, no este archivo.
 """
 import html
@@ -53,15 +58,27 @@ import categorias
 # Rango de caída -> (emoji, etiqueta). El orden importa: se evalúa de mayor a
 # menor y se usa el primero que calce.
 #   70%-99% caen en los rangos de ERROR     (van al tópico de errores)
-#   50%-70% caen en los de OFERTA           (ofertas + su categoría si tiene)
-#   35%-50% caen en el de CATEGORIA         (solo su tópico de categoría)
+#   40%-70% caen en los de OFERTA           (ofertas + su categoría si tiene)
+#   35%-40% caen en el de CATEGORIA         (solo su tópico de categoría)
+#
+# ── LOS CORTES SALEN DE `baseprecios`, NO SE ESCRIBEN DOS VECES ───────────
+#
+# Estaban copiados a mano, y el 11-ago `UMBRAL_OFERTA` bajó de 0,50 a 0,40
+# ("ropa, zapatillas y todo lo que no es electrónica ni hogar entra desde
+# ahí") sin que esta tabla se enterara. Efecto: una oferta de -45% se
+# clasificaba como OFERTA y se mandaba al tópico de Ofertas, pero llegaba
+# rotulada "📉 Rebaja" — la etiqueta que este archivo reserva para lo que
+# NO alcanza a ser oferta. En la base del 13-ago eran 23 de 130 avisos.
+#
+# Nadie lo iba a ver leyendo el código: hay que cruzar dos archivos. Ahora
+# el corte vive en un solo lado y esto lo lee.
 RANGOS = (
     (0.90, "🔥", "SRank"),      # 90-99%: el error grande, el que vuela
     (0.80, "🅰️", "ARank"),
-    (0.70, "🅱️", "BRank"),      # 70-80%: error de precio más leve
-    (0.60, "🏷️", "Oferta+"),    # 60-70%: oferta muy fuerte
-    (0.50, "🏷️", "Oferta"),     # 50-60%: el piso general, oferta real
-    (0.35, "📉", "Rebaja"),     # 35-50%: solo en Electrónicos u Hogar
+    (baseprecios.UMBRAL_ERROR, "🅱️", "BRank"),      # 70-80%: error más leve
+    (0.60, "🏷️", "Oferta+"),                        # 60-70%: oferta muy fuerte
+    (baseprecios.UMBRAL_OFERTA, "🏷️", "Oferta"),    # el piso general
+    (baseprecios.UMBRAL_CATEGORIA, "📉", "Rebaja"),  # solo Electrónicos/Hogar
 )
 
 
