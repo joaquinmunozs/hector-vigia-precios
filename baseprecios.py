@@ -392,6 +392,35 @@ def _aviso_reciente(con, url, ahora):
     return bool(f and (ahora - f["avisado_en"]) < VENTANA_REPETIR)
 
 
+def _ya_se_dijo(con, url, precio_actual):
+    """¿Ya avisamos este producto a este precio, y sigue sin corregirse?
+
+    LA VENTANA DE 12 h NO ALCANZA (13-ago-2026)
+    ------------------------------------------------------------------------
+    Un precio que se queda abajo vuelve a cruzar el umbral cada vez que se
+    lee, y `_aviso_reciente` sólo tapa 12 h. Medido en producción: la manteca
+    de cacao salió TRES veces (11, 12 y 13 de agosto), idéntica; las toallas,
+    la vajilla y el matcha, dos veces cada una. 4 de los 11 avisos de error
+    del período eran repeticiones.
+
+    El filtro que debía impedirlo —"tiene que ser el más barato jamás visto"—
+    vive detrás de `if con_historial`, y hoy no protege a nadie: las 170
+    alertas de la base de producción tienen la referencia en `origen inicial`,
+    o sea ninguna ficha llega a los 7 días de observación.
+
+    La regla no necesita historial: si ya lo dijimos a este precio o más
+    barato, y la tienda todavía no lo corrigió, no es noticia otra vez.
+
+    SÓLO cuentan las alertas ABIERTAS (`restablecido_en IS NULL`). Si el
+    precio se recuperó y la tienda se vuelve a equivocar la semana siguiente,
+    eso SÍ es un hallazgo nuevo — y es además el caso que mejor paga.
+    """
+    f = con.execute(
+        "SELECT MIN(precio) AS piso FROM alertas "
+        "WHERE url=? AND restablecido_en IS NULL", (url,)).fetchone()
+    return bool(f and f["piso"] is not None and precio_actual >= f["piso"])
+
+
 def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None):
     """Clasifica el precio de hoy. Devuelve el detalle o None.
 
@@ -509,6 +538,12 @@ def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None):
     if _aviso_reciente(con, url, ahora):
         return None
 
+    # Y aunque hayan pasado las 12 h: si ya lo dijimos a este precio y sigue
+    # sin corregirse, repetirlo sólo enseña al suscriptor a silenciar el
+    # tópico. Ver `_ya_se_dijo`.
+    if _ya_se_dijo(con, url, precio_actual):
+        return None
+
     if caida >= UMBRAL_ERROR:
         tipo = ERROR
     elif caida >= UMBRAL_OFERTA:
@@ -593,8 +628,21 @@ def marcar_si_restablecido(con, url, precio_actual, ahora=None):
         "ORDER BY avisado_en DESC LIMIT 1", (url,)).fetchone()
     if not abierta or precio_actual < abierta["referencia"] * 0.9:
         return None
-    con.execute("UPDATE alertas SET restablecido_en=? WHERE id=?",
-                (ahora, abierta["id"]))
+    # SE CIERRAN TODAS LAS ABIERTAS DE ESA URL, NO SÓLO LA ÚLTIMA (13-ago-2026)
+    #
+    # Antes esto cerraba una sola fila. Con varias alertas abiertas del mismo
+    # producto —que es lo normal cuando el precio baja por escalones— las
+    # viejas quedaban abiertas para siempre aunque la tienda hubiera corregido
+    # hace rato. Eso no molestaba mientras nadie leyera `restablecido_en`,
+    # pero `_ya_se_dijo` ahora lo usa para decidir si un error que REAPARECE
+    # vuelve a avisarse: con una fila zombi abierta, ese hallazgo —de los que
+    # mejor pagan— quedaba tapado en silencio.
+    #
+    # `duracion_errores` mide fila por fila (`restablecido_en - avisado_en`),
+    # así que cerrarlas juntas no le miente: cada aviso conserva su propia
+    # duración, contada desde que se emitió hasta que la tienda corrigió.
+    con.execute("UPDATE alertas SET restablecido_en=? "
+                "WHERE url=? AND restablecido_en IS NULL", (ahora, url))
     con.commit()
     return ahora
 

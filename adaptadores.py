@@ -45,16 +45,65 @@ _ID_FALABELLA = re.compile(r"/product/(\d+)/")
 # (eventPrice, internetPrice, normalPrice...). Se recogen todos y se toma el
 # MENOR: es el que el cliente termina pagando, y es contra ese que tiene
 # sentido medir una caída.
-_PRECIOS = re.compile(r'"price"\s*:\s*\[\s*"([\d.,]+)"')
-
-
+#
+# ── PERO NO TODO "price" ES UN PRECIO (13-ago-2026) ───────────────────────
+#
+# La ley chilena obliga a mostrar el precio por unidad de medida junto al
+# precio: "$34.030  ($681 el gr)". Falabella lo publica DENTRO del mismo
+# bloque, en una llave `pum`:
+#
+#     "price": ["34.030"],  "pum": {"label": "gr", "price": ["681"]}
+#
+# Esto se recogía con una regex sobre el JSON entero, así que el pum entraba
+# a la bolsa como un precio más — y como por definición es más chico que el
+# precio, `min()` lo elegía SIEMPRE. El vigía leía $681 donde el producto
+# vale $34.030 y anunciaba un -98% que no existía.
+#
+# De los 11 avisos de "🚨 ERROR DE PRECIO" que salieron entre el 11 y el
+# 13-ago, NUEVE eran esto. Le pasa a todo lo que se vende por peso, volumen
+# o en pack: media tienda de supermercado y hogar.
+#
+# Por eso se recorre el árbol en vez de barrerlo con una regex: es la única
+# forma de saber si un "price" cuelga de un `pum` o no. Ver `probar_pum.py`.
 def _num(txt):
     """'1.299.990' -> 1299990. El punto es separador de miles en Chile."""
+    if isinstance(txt, bool):
+        return None
+    if isinstance(txt, (int, float)):
+        n = int(txt)
+        return n if PRECIO_MIN <= n <= PRECIO_MAX else None
     s = re.sub(r"[^\d]", "", str(txt))
     if not s:
         return None
     n = int(s)
     return n if PRECIO_MIN <= n <= PRECIO_MAX else None
+
+
+def _recolectar_precios(nodo, salida):
+    """Todos los precios del árbol, saltándose los de unidad de medida.
+
+    Se descarta por DOS señales, no una: la llave `pum` y el `"type": "pum"`
+    del propio bloque. La segunda es la que aguanta que Falabella lo mueva de
+    sitio o lo renombre — si sólo se mirara el nombre de la llave, el aviso
+    falso volvería solo el día que cambien el JSON, y nadie se enteraría
+    hasta ver un -98% en el tópico.
+    """
+    if isinstance(nodo, dict):
+        if str(nodo.get("type") or "").lower() == "pum":
+            return
+        for clave, valor in nodo.items():
+            if str(clave).lower() == "pum":
+                continue
+            if str(clave).lower() == "price":
+                for x in (valor if isinstance(valor, list) else [valor]):
+                    n = _num(x)
+                    if n:
+                        salida.append(n)
+                continue
+            _recolectar_precios(valor, salida)
+    elif isinstance(nodo, list):
+        for v in nodo:
+            _recolectar_precios(v, salida)
 
 
 def falabella(url, bajar):
@@ -74,8 +123,8 @@ def falabella(url, bajar):
     except Exception:                      # noqa: BLE001
         return None
 
-    entero = json.dumps(datos, ensure_ascii=False)
-    precios = [p for p in (_num(x) for x in _PRECIOS.findall(entero)) if p]
+    precios = []
+    _recolectar_precios(datos, precios)
     if not precios:
         return None
 
