@@ -507,7 +507,21 @@ def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None):
         return None
 
     # El ahorro en pesos, no el precio del producto. Ver AHORRO_MINIMO.
-    if (referencia - precio_actual) < AHORRO_MINIMO:
+    #
+    # NO APLICA A ERRORES DE PRECIO (15-ago-2026)
+    # --------------------------------------------------------------------
+    # Un error de precio (caída >= UMBRAL_ERROR) es la tienda vendiendo por
+    # accidente, no un descuento — el docstring del módulo ya lo decía: "un
+    # 75% de caída se entiende solo, no hace falta historial". Pero el piso
+    # de $8.000 SÍ lo estaba bloqueando: contra la base de producción, una
+    # broca de $7.290 que cae a $1.000 (-86%) o una cortina de $36.990 a
+    # $10.990 (-70%) nunca alcanzan $8.000 de ahorro aunque el error sea
+    # evidente. Verificado contra 4 caídas reales de 70%-86% en productos de
+    # precio bajo: las 4 quedaban silenciadas solo por este piso, nada más
+    # las bloqueaba. El piso de plata sigue aplicando a ofertas y categoría,
+    # donde sí importa cuánto se ahorra el suscriptor — un error no es una
+    # oferta, es la tienda equivocándose.
+    if caida < UMBRAL_ERROR and (referencia - precio_actual) < AHORRO_MINIMO:
         return None
 
     # UNA OFERTA SIN HISTORIAL NO SE AVISA (11-ago-2026)
