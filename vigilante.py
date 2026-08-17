@@ -593,6 +593,78 @@ def _marca(tienda, clase):
         d[clase] = d.get(clase, 0) + 1
 
 
+# ── LA COLA TIENE TOPE, Y POR QUÉ (16-ago-2026) ────────────────────────────
+#
+# Antes esto era `queue.Queue()` sin tope. Los hilos de tienda bajaban fichas
+# mucho más rápido de lo que el ÚNICO hilo consumidor podía evaluarlas, la
+# cola crecía en silencio, y al cerrar la tanda todo lo que quedaba adentro se
+# tiraba sin que `evaluar()` lo mirara jamás. Medido en producción:
+#
+#     corrida        ok (bajadas)   leídos (evaluadas)   drenado
+#     15-ago 12:41       642.262            642.242        100%
+#     16-ago 18:32       472.707             82.375         17%
+#
+# Unas 390.000 fichas por corrida bajadas, parseadas y tiradas. Eso es lo que
+# tenía a Héctor casi mudo: no es que no hubiera caídas, es que el 83% de lo
+# que se bajaba nunca se evaluaba.
+#
+# EL CUELLO NO ES LA BASE: medido contra la base real (370 MB), el trabajo por
+# item (evaluar + guardar + commit) rinde 1.413 items/s. El consumidor real
+# hacía 6,7/s.
+#
+# ES EL GIL. `extractor.extraer` corre TODAS sus estrategias sobre el HTML
+# completo: ~33 ms de CPU pura por ficha, con el GIL tomado. Con ~60 hilos de
+# tienda haciendo eso, el consumidor no alcanza a correr. Medido: el bucle
+# consumidor solo rinde 500 items/s; con 8 hilos parseando en paralelo, 0,2/s.
+# Y la cuenta cierra con producción: 472.707 fichas × 33 ms son ~15.600
+# segundos de CPU de parseo dentro de una tanda de 12.242 segundos — el
+# proceso está sobresuscrito, no queda GIL para nadie más.
+#
+# El tope arregla las dos cosas de una: cuando el consumidor se atrasa, el
+# hilo de tienda se FRENA en el `put`, y al frenarse deja de parsear — que es
+# exactamente el CPU que le faltaba al consumidor. Se baja menos, pero se
+# evalúa todo lo que se baja, que es lo único que produce alertas.
+#
+# El tope no es un número fino: alcanza con que sea lo bastante grande para
+# absorber ráfagas (una vuelta de falabella son ~735 fichas fijas) y lo
+# bastante chico para que el atraso se note enseguida en vez de acumularse.
+COLA_MAXIMA = 5_000
+
+# Cuánto espera el hilo de tienda a que se libere cupo antes de dar la lectura
+# por perdida. Generoso a propósito: frenar es lo que se busca, descartar es
+# el último recurso. Si aparecen descartes en la tabla de salud, el consumidor
+# está tan atrasado que ya no es contrapresión, es un problema aparte.
+ESPERA_COLA = 30.0
+
+
+def _entregar(salida, tienda, url, d, parar=None):
+    """Pone una lectura en la cola del consumidor, con contrapresión.
+
+    Devuelve True si quedó entregada. Si la cola sigue llena después de
+    `ESPERA_COLA`, la anota como `descartado` y devuelve False: una ficha que
+    se bajó y no se evaluó tiene que verse en la tabla de salud, nunca
+    desaparecer en silencio como pasaba antes.
+
+    `parar` se mira mientras se espera. Al cerrar la tanda el consumidor deja
+    de sacar, así que TODOS los hilos de tienda quedarían trabados hasta
+    cumplir los 30 s y anotarían un descarte cada uno: unos 60 descartes
+    falsos por corrida, justo en la columna que se acaba de agregar para
+    detectar los de verdad. Ese caso sale sin anotar nada — la lectura se
+    pierde igual, pero es el cierre normal de la tanda, no una señal.
+    """
+    fin = time.time() + ESPERA_COLA
+    while True:
+        if parar is not None and parar.is_set():
+            return False
+        try:
+            salida.put((tienda, url, d), timeout=0.25)
+            return True
+        except queue.Full:
+            if time.time() >= fin:
+                _marca(tienda, "descartado")
+                return False
+
+
 def _resumen_salud():
     """Tabla de salud por tienda, ordenada por la peor. Es la que se mira
     antes de decidir si el ritmo puede subir otro escalón."""
@@ -603,9 +675,11 @@ def _resumen_salud():
             rech = d.get("rechazo", 0)
             tout = d.get("timeout", 0)
             otro = d.get("otro", 0)
+            desc = d.get("descartado", 0)
             tot = ok + rech + tout + otro
-            if tot:
-                filas.append((t, ok, rech, tout, otro, 100.0 * ok / tot))
+            if tot or desc:
+                filas.append((t, ok, rech, tout, otro,
+                              100.0 * ok / tot if tot else 0.0, desc))
     return sorted(filas, key=lambda f: f[5])
 
 
@@ -651,8 +725,13 @@ def _vigilar_tienda(tienda, plan, salida, parar, progreso):
             t0 = time.time()
             try:
                 d = _leer(tienda, url)
-                salida.put((tienda, url, d))
                 _marca(tienda, "ok")
+                # Puede FRENAR acá si el consumidor está atrasado, y está bien:
+                # es la contrapresión que evita bajar 390.000 fichas por corrida
+                # para tirarlas después (ver COLA_MAXIMA). El `t0` de abajo ya
+                # descuenta esta espera del intervalo, así que frenar no hace
+                # que después se dispare una ráfaga para "recuperar".
+                _entregar(salida, tienda, url, d, parar)
             except Exception as ex:                    # noqa: BLE001 — una
                 # NO se traga el fallo en silencio (12-ago-2026). Antes acá
                 # había un `pass` pelado, y eso dejaba ciego justo al que
@@ -756,7 +835,7 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
                   % (niv, peor / 60, lento))
     print()
 
-    salida = queue.Queue()
+    salida = queue.Queue(maxsize=COLA_MAXIMA)
     parar = threading.Event()
     progreso = {}
     hilos = [threading.Thread(target=_vigilar_tienda,
@@ -895,10 +974,33 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
     # El contraste que faltaba: lo PRESUPUESTADO contra lo REALMENTE hecho.
     # Mientras el log solo imprimía la vuelta teórica (cupo ÷ ritmo), un
     # vigilante corriendo al 4% de su capacidad se veía igual que uno sano.
-    # Si estas dos cifras se separan mucho, el cuello está en la red o en la
-    # latencia, no en el presupuesto — y subir HECTOR_FACTOR_RITMO no ayuda.
-    print("   presupuestado: %.0f req/s · real: %.1f req/s (%.0f%%)"
-          % (req_s, leidos / dur, 100.0 * (leidos / dur) / max(1, req_s)))
+    #
+    # OJO CON LEER ESTO MAL (16-ago-2026): `leidos` NO es lo que se bajó de
+    # las tiendas, es lo que el consumidor alcanzó a EVALUAR. Durante días la
+    # línea dijo "real: 6.7 req/s (3%)" y se leyó como un problema de red o de
+    # ritmo, cuando la red iba a 38 req/s y el atasco estaba en el consumidor.
+    # Por eso ahora se imprimen las dos, y la diferencia entre ellas tiene
+    # nombre propio. Si BAJADAS es alto y EVALUADAS es bajo, subir
+    # HECTOR_FACTOR_RITMO empeora las cosas: baja más fichas para tirar.
+    with _SALUD_LOCK:
+        bajadas = sum(d.get("ok", 0) for d in _SALUD.values())
+        descartadas = sum(d.get("descartado", 0) for d in _SALUD.values())
+    print("   presupuestado: %.0f req/s · bajadas: %.1f/seg · evaluadas: %.1f/seg (%.0f%%)"
+          % (req_s, bajadas / dur, leidos / dur,
+             100.0 * (leidos / dur) / max(1, req_s)))
+    # Al cerrar la tanda siempre quedan unas pocas en vuelo (una por hilo de
+    # tienda, como mucho): avisar por ESO sería ruido en todas las corridas y
+    # el aviso dejaría de mirarse. Se avisa cuando el atraso es estructural.
+    # Para referencia, la corrida del 16-ago tenía el 83% sin evaluar.
+    sin_mirar = max(0, bajadas - leidos)
+    if sin_mirar > max(200, 0.02 * bajadas):
+        print("   ⚠️  %d fichas bajadas que NO se evaluaron (%.0f%% de lo bajado)"
+              % (sin_mirar, 100.0 * sin_mirar / max(1, bajadas)))
+        print("      el consumidor va más lento que las tiendas — mirar el GIL "
+              "del parseo antes que el ritmo (ver COLA_MAXIMA)")
+    if descartadas:
+        print("   ⚠️  %d descartadas por cola llena tras %.0f s de espera"
+              % (descartadas, ESPERA_COLA))
 
     # ── LA TABLA QUE DECIDE SI EL RITMO PUEDE SUBIR ───────────────────────
     #
@@ -910,10 +1012,14 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
     if filas:
         print("\n   SALUD POR TIENDA (factor %.2f) — mirar la columna rechazo:"
               % _factor_ritmo())
-        print("   %-20s %9s %9s %9s %8s" % ("tienda", "ok", "rechazo", "timeout", "% ok"))
-        for t, ok, rech, tout, otro, pct in filas:
+        print("   %-20s %9s %9s %9s %10s %8s"
+              % ("tienda", "ok", "rechazo", "timeout", "descartado", "% ok"))
+        for t, ok, rech, tout, otro, pct, desc in filas:
             aviso = "  <-- BAJARLE EL RITMO" if rech and pct < 90 else ""
-            print("   %-20s %9d %9d %9d %7.1f%%%s" % (t, ok, rech, tout, pct, aviso))
+            if desc:
+                aviso = "  <-- SE TIRARON LECTURAS" + aviso
+            print("   %-20s %9d %9d %9d %10d %7.1f%%%s"
+                  % (t, ok, rech, tout, desc, pct, aviso))
         total_rech = sum(f[2] for f in filas)
         if total_rech == 0:
             print("   → cero rechazos: el ritmo se puede subir otro escalón.")
