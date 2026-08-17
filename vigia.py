@@ -199,15 +199,28 @@ def descubrir_productos(con, niveles=("limpia", "media"), tope_tienda=100000):
         if len(fichas) >= tope_tienda:
             _marcador_descubrir(con, dom, desp + 1)
 
-        nuevas = 0
+        # Las que ya se comprobó que no son fichas NO vuelven a entrar, salvo
+        # que hayan pasado DIAS_REINTENTAR_DESCARTADA. Sin esto, cada lunes se
+        # remetían las mismas URLs muertas y se volvían a pagar 6 lecturas
+        # fallidas por cada una — ver la tabla `descartadas`.
+        corte_desc = int(time.time()) - baseprecios.DIAS_REINTENTAR_DESCARTADA * 86400
+        nuevas, saltadas = 0, 0
         for u in fichas:
             cur = con.execute(
                 "INSERT INTO precios (tienda, url, nombre, precio, visto_en) "
                 "SELECT ?,?,'',0,0 WHERE NOT EXISTS "
-                "(SELECT 1 FROM precios WHERE url=?)", (dom, u, u))
-            nuevas += cur.rowcount
+                "(SELECT 1 FROM precios WHERE url=?) "
+                "AND NOT EXISTS (SELECT 1 FROM descartadas "
+                "                WHERE url=? AND cuando > ?)",
+                (dom, u, u, u, corte_desc))
+            if cur.rowcount:
+                nuevas += 1
+            else:
+                saltadas += 1
         con.commit()
-        print("  %-20s %6d fichas (%d nuevas)" % (dom, len(fichas), nuevas))
+        print("  %-20s %6d fichas (%d nuevas%s)"
+              % (dom, len(fichas), nuevas,
+                 ", %d ya descartadas antes" % saltadas if saltadas else ""))
         total += nuevas
     return total
 

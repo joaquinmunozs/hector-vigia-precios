@@ -574,6 +574,18 @@ def _ventana_rotativa(rotativa, desde, cupo_rot):
 # rota, y se arreglan de otra forma.
 RECHAZO = (403, 429, 503, 502, 520, 521, 522, 429)
 
+# Tiendas que ya sabemos que BLOQUEAN, y que se dejan sondeando despacio a
+# propósito por si el bloqueo se levanta (ver el bloque de tottus en
+# RITMO_SEGURO). No son un problema de ritmo y no hay que "bajarles el ritmo":
+# ya están en el mínimo.
+#
+# Existe porque la tabla de salud las marcaba "<-- BAJARLE EL RITMO" y las
+# ponía primeras en "revisar:". Ese cartel es exactamente la pista falsa que
+# el 16-ago hizo perder tiempo buscando un problema de ritmo que no existía,
+# mientras el problema real era otro (la cola sin tope). Una alarma que
+# siempre está encendida no informa: entrena a ignorarla.
+BLOQUEADAS_CONOCIDAS = {"tottus.cl"}
+
 _SALUD = {}
 _SALUD_LOCK = threading.Lock()
 
@@ -1015,18 +1027,33 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
         print("   %-20s %9s %9s %9s %10s %8s"
               % ("tienda", "ok", "rechazo", "timeout", "descartado", "% ok"))
         for t, ok, rech, tout, otro, pct, desc in filas:
-            aviso = "  <-- BAJARLE EL RITMO" if rech and pct < 90 else ""
+            if t in BLOQUEADAS_CONOCIDAS:
+                aviso = "  <-- bloqueada (sondeo lento, no es ritmo)"
+            elif rech and pct < 90:
+                aviso = "  <-- BAJARLE EL RITMO"
+            else:
+                aviso = ""
             if desc:
                 aviso = "  <-- SE TIRARON LECTURAS" + aviso
             print("   %-20s %9d %9d %9d %10d %7.1f%%%s"
                   % (t, ok, rech, tout, desc, pct, aviso))
-        total_rech = sum(f[2] for f in filas)
+        # Los rechazos de una tienda que YA sabemos bloqueada no cuentan para
+        # decidir el ritmo: son constantes, conocidos, y si se suman al total
+        # tapan el número que sí importa — el de las tiendas que recién
+        # empiezan a incomodarse.
+        total_rech = sum(f[2] for f in filas if f[0] not in BLOQUEADAS_CONOCIDAS)
+        rech_bloq = sum(f[2] for f in filas if f[0] in BLOQUEADAS_CONOCIDAS)
         if total_rech == 0:
             print("   → cero rechazos: el ritmo se puede subir otro escalón.")
         else:
-            malas = [f[0] for f in filas if f[2] and f[5] < 90]
+            malas = [f[0] for f in filas
+                     if f[2] and f[5] < 90 and f[0] not in BLOQUEADAS_CONOCIDAS]
             print("   → %d rechazos en total%s" % (
                 total_rech, (" · revisar: " + ", ".join(malas[:5])) if malas else ""))
+        if rech_bloq:
+            print("   → %d rechazos más de tiendas ya bloqueadas (%s), "
+                  "esperados: no entran en la cuenta de arriba"
+                  % (rech_bloq, ", ".join(sorted(BLOQUEADAS_CONOCIDAS))))
     if progreso:
         completas = sum(1 for p in progreso.values() if p.get("vueltas"))
         print("   vueltas completas: %d tienda(s) · rotación guardada para la "

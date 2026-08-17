@@ -116,13 +116,68 @@ def _toca_barrida_completa(ahora):
     return ahora.hour < 4
 
 
-def _toca_recalibrar(ahora):
-    """Los días 1 y 15 se refrescan las referencias con el historial real.
+DIAS_ENTRE_RECALIBRACIONES = 7
+_CLAVE_RECALIBRACION = "ultima_recalibracion"
+
+
+def _ultima_recalibracion(con):
+    con.execute("CREATE TABLE IF NOT EXISTS marcadores ("
+                "clave TEXT PRIMARY KEY, valor INTEGER NOT NULL)")
+    f = con.execute("SELECT valor FROM marcadores WHERE clave=?",
+                    (_CLAVE_RECALIBRACION,)).fetchone()
+    return f["valor"] if f else 0
+
+
+def _anotar_recalibracion(con, ahora=None):
+    ahora = int(ahora or time.time())
+    con.execute("CREATE TABLE IF NOT EXISTS marcadores ("
+                "clave TEXT PRIMARY KEY, valor INTEGER NOT NULL)")
+    con.execute("INSERT INTO marcadores (clave, valor) VALUES (?,?) "
+                "ON CONFLICT(clave) DO UPDATE SET valor=excluded.valor",
+                (_CLAVE_RECALIBRACION, ahora))
+    con.commit()
+
+
+def _toca_recalibrar(con, ahora=None):
+    """Se refrescan las referencias cuando pasó una semana desde la última.
 
     Va espaciado a propósito: una referencia que se actualiza muy seguido se
-    "acostumbra" a un precio bajo y deja de verlo como caída.
+    "acostumbra" a un precio bajo y deja de verlo como caída. Ese espaciado NO
+    cambió — lo que cambió es contra qué se mide.
+
+    ANTES SE MIRABA EL DÍA DEL MES (16-ago-2026)
+    --------------------------------------------------------------------------
+    Decía `ahora.day in (1, 15)`. Parece equivalente y no lo es: la condición
+    real de `recalcular_bases` es tener DIAS_MINIMOS_HISTORIAL (7) días de
+    historial, y el historial no arranca el día 1 del mes — arranca cuando
+    arranca, y vuelve a cero cada vez que se pierde la base.
+
+    Lo que pasó en producción: el historial de Héctor empieza el 10-ago, así
+    que el 15-ago tenía 5 días cuando hacían falta 7. Las 4 corridas de ese día
+    imprimieron "recalibración: 0 referencias actualizadas" y la siguiente
+    oportunidad caía recién el 1-sep. Resultado: las 190.317 líneas base
+    seguían diciendo `inicial` — o sea, la referencia de cada producto era el
+    PRIMER precio que se le vio, no su precio normal.
+
+    Y eso apagaba dos de los tres canales: `evaluar()` exige historial para
+    anunciar ofertas y rebajas de categoría, así que solo salían errores de
+    precio. Los avisos cayeron de 160 el 11-ago a entre 0 y 6 por día.
+
+    Ahora se pregunta lo que de verdad importa: ¿pasaron 7 días desde la
+    última vez? Si nunca se hizo, alcanza con que el historial dé para algo.
     """
-    return ahora.day in (1, 15)
+    ahora = int(ahora or time.time())
+    ultima = _ultima_recalibracion(con)
+    if ultima:
+        return (ahora - ultima) >= DIAS_ENTRE_RECALIBRACIONES * 86400
+    # Nunca se recalibró: se hace en cuanto haya un producto que califique,
+    # sin esperar a ninguna fecha. Se pregunta a la base en vez de suponer,
+    # porque `recalcular_bases` usa exactamente el mismo corte.
+    corte = ahora - baseprecios.DIAS_MINIMOS_HISTORIAL * 86400
+    f = con.execute(
+        "SELECT 1 FROM precios WHERE precio>0 AND visto_en>0 AND visto_en<=? "
+        "LIMIT 1", (corte,)).fetchone()
+    return bool(f)
 
 
 def main():
@@ -208,10 +263,16 @@ def main():
         hallazgos = []
     print("\nestado tras la barrida:", baseprecios.estadisticas(con))
 
-    if _toca_recalibrar(ahora):
+    if _toca_recalibrar(con):
         try:
             tocados = baseprecios.recalcular_bases(con)
             print("recalibración: %d referencias actualizadas" % tocados)
+            # Solo se anota si de verdad actualizó algo. Si dio 0 (historial
+            # todavía corto), NO se marca: así vuelve a intentarlo en la
+            # corrida siguiente en vez de dormir otros 7 días — que es
+            # exactamente el modo de falla que tuvo el 15-ago.
+            if tocados:
+                _anotar_recalibracion(con)
         except Exception as ex:                          # noqa: BLE001
             print("recalibración falló (la barrida sí quedó): %s" % str(ex)[:120])
 

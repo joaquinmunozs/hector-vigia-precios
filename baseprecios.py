@@ -146,6 +146,31 @@ CREATE TABLE IF NOT EXISTS fallos (
     veces  INTEGER NOT NULL DEFAULT 0
 );
 
+-- URLs que YA se comprobó que no son fichas de producto, para que el
+-- descubrimiento no las vuelva a meter cada lunes.
+--
+-- POR QUÉ (16-ago-2026)
+-- ---------------------------------------------------------------------------
+-- `olvidar_url` borraba la URL de `precios`, `linea_base` y `fallos`, o sea
+-- no dejaba ningún rastro. Y `descubrir_productos` mete una URL si no está en
+-- `precios`. Resultado: cada lunes se redescubría exactamente lo mismo que la
+-- semana anterior había costado 6 lecturas fallidas descartar.
+--
+-- Medido: el sitemap de casaideas.cl publica 3.082 URLs y NINGUNA es una
+-- ficha (son categorías y landings); el de easy.cl, 929 y ninguna; el de
+-- jumbo.cl, 803 de las que solo 3 son fichas. Esas tres tiendas solas metían
+-- ~4.800 URLs muertas por semana, cada una con 6 intentos de lectura por
+-- delante. Y como al morir no dejaban rastro, la tienda terminaba con 0
+-- productos y el ciclo volvía a empezar.
+--
+-- `cuando` existe para poder readmitirlas: una tienda puede cambiar de
+-- plataforma y publicar fichas donde antes había categorías. Ver
+-- DIAS_REINTENTAR_DESCARTADA.
+CREATE TABLE IF NOT EXISTS descartadas (
+    url    TEXT PRIMARY KEY,
+    cuando INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS alertas (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     url        TEXT NOT NULL,
@@ -726,9 +751,26 @@ def anotar_fallo(con, url):
     return bool(f and f["veces"] >= TOPE_FALLOS)
 
 
-def olvidar_url(con, url):
+# Cada cuánto se le vuelve a dar una oportunidad a una URL descartada. Una
+# tienda puede cambiar de plataforma y empezar a publicar fichas donde antes
+# había categorías, así que el descarte no puede ser para siempre — pero
+# tampoco puede ser semanal, que es lo que pasaba antes de que existiera la
+# tabla `descartadas`.
+DIAS_REINTENTAR_DESCARTADA = 60
+
+
+def olvidar_url(con, url, ahora=None):
+    """Saca una URL del catálogo y DEJA CONSTANCIA de que se descartó.
+
+    La constancia es la parte que faltaba: sin ella el descubrimiento del
+    lunes siguiente la volvía a meter, y se pagaban otras 6 lecturas fallidas
+    para llegar a la misma conclusión. Ver la tabla `descartadas`.
+    """
     for tabla in ("precios", "linea_base", "fallos"):
         con.execute("DELETE FROM %s WHERE url=?" % tabla, (url,))
+    con.execute("INSERT INTO descartadas (url, cuando) VALUES (?,?) "
+                "ON CONFLICT(url) DO UPDATE SET cuando=excluded.cuando",
+                (url, int(ahora or time.time())))
 
 
 def limpiar_fallo(con, url):

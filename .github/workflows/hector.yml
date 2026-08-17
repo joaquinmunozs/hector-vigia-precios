@@ -55,7 +55,7 @@ jobs:
     # el vigilante, así que hay margen de sobra para cerrar y subir el estado.
     timeout-minutes: 350
     permissions:
-      contents: read
+      contents: write     # para subir el respaldo semanal como asset de release
       actions: read       # necesario para listar corridas y elegir la anterior
 
     steps:
@@ -194,6 +194,49 @@ jobs:
         with:
           name: precios-db
           path: precios.db
-          retention-days: 3        # solo se usa el más reciente; 3 días es margen
+          # 90 días, no 3 (16-ago-2026).
+          #
+          # Acá vive TODO el historial de precios de Héctor, y el historial es
+          # lo que decide si un aviso sale o no: sin 7 días de historial,
+          # `evaluar()` solo deja pasar errores de precio y apaga ofertas y
+          # rebajas. Con `retention-days: 3`, tres días seguidos de corridas
+          # fallidas borraban el artifact, la corrida siguiente arrancaba con
+          # catálogo vacío y el reloj del historial volvía a cero — o sea,
+          # otras dos semanas sin poder avisar ofertas.
+          #
+          # Ese no es un riesgo teórico: el historial actual arranca el
+          # 10-ago porque ya pasó. En repos públicos el almacenamiento de
+          # Actions es gratis, así que el margen no cuesta nada. 90 es el
+          # máximo que permite GitHub.
+          retention-days: 90
           if-no-files-found: warn
           overwrite: true
+
+      # ── RESPALDO QUE NO EXPIRA NUNCA ──────────────────────────────────────
+      #
+      # Los artifacts caducan siempre, por largo que sea el plazo. Los assets
+      # de un release no caducan. Una vez al día se guarda ahí una copia, para
+      # que perder el historial deje de ser posible: en el peor caso se baja
+      # esta y se pierde un día, no dos semanas de acumulación.
+      #
+      # Solo en la corrida de la madrugada: son ~370 MB y subirla seis veces
+      # al día no aporta nada.
+      - name: Respaldo diario que no expira
+        if: always() && github.event_name == 'schedule'
+        continue-on-error: true          # nunca puede tumbar la corrida
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ ! -f precios.db ]; then
+            echo "sin base que respaldar"; exit 0
+          fi
+          if [ "$(date -u +%H)" -ge 04 ]; then
+            echo "no es la corrida de la madrugada: no toca respaldo"; exit 0
+          fi
+          gh release view respaldo-base >/dev/null 2>&1 || \
+            gh release create respaldo-base \
+              --title "Respaldo de la base de precios" \
+              --notes "Copia diaria de precios.db. La sube hector.yml sola. Acá vive todo el historial: si se pierde, Héctor tarda dos semanas en volver a poder avisar ofertas." \
+              --latest=false
+          gh release upload respaldo-base precios.db --clobber
+          echo "respaldo subido: $(du -h precios.db | cut -f1)"
