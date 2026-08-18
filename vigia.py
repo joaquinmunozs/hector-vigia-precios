@@ -336,12 +336,16 @@ def _objetivos(con, limite=None):
     # orden por precio global que el SQL nunca hizo.
     filas = con.execute("""
         SELECT p.tienda, p.url,
-               COALESCE(MAX(CASE WHEN p.precio > 0 THEN p.precio END), -1) AS ref
+               COALESCE((SELECT p2.precio FROM precios p2
+                         WHERE p2.url=p.url AND p2.precio>0
+                         ORDER BY COALESCE(p2.visto_hasta,p2.visto_en) DESC,
+                                  p2.id DESC LIMIT 1), -1) AS ref
         FROM precios p
         GROUP BY p.url
         ORDER BY (ref > 0) ASC, ref DESC
     """).fetchall()
-    objetivos = [(f["tienda"], f["url"]) for f in filas]
+    objetivos = [(f["tienda"], f["url"], f["ref"] if f["ref"] > 0 else None)
+                 for f in filas]
     sin_medir = sum(1 for f in filas if f["ref"] < 0)
     if sin_medir:
         print("  %d fichas sin medir van primero (son las que el vigilante "
@@ -355,14 +359,16 @@ def _objetivos(con, limite=None):
     if limite:
         # Muestra repartida entre tiendas, no las primeras N de una sola.
         por_tienda = {}
-        for t, u in objetivos:
-            por_tienda.setdefault(t, []).append(u)
+        for t, u, ref in objetivos:
+            por_tienda.setdefault(t, []).append((u, ref))
         cupo = max(1, limite // max(1, len(por_tienda)))
-        objetivos = [(t, u) for t, us in por_tienda.items() for u in us[:cupo]]
+        objetivos = [(t, u, ref) for t, us in por_tienda.items()
+                     for u, ref in us[:cupo]]
     return objetivos
 
 
-def barrida(con, avisar=True, limite=None, segundos_max=None):
+def barrida(con, avisar=True, limite=None, segundos_max=None, notificador=None,
+            pool_parseo=None):
     """`segundos_max`: corta la barrida ahí aunque queden productos sin ver.
 
     Agregado 10-ago-2026 tras encontrar corridas reales donde el throughput
@@ -381,18 +387,27 @@ def barrida(con, avisar=True, limite=None, segundos_max=None):
         print("Sin productos. Corre primero:  python vigia.py --descubrir")
         return []
 
+    # (codex) La barrida y el vigilante comparten procesos: no duplican CPU.
+    pool_propio = pool_parseo is None and vigilante._procesos_parseo() > 0
+    pool_parseo = vigilante.crear_pool_parseo() if pool_propio else pool_parseo
+
+    notificador_propio = avisar and notificador is None
+    if notificador_propio:
+        notificador = alertas.NotificadorTelegram()
+
     por_tienda = {}
-    for t, u in objetivos:
-        por_tienda.setdefault(t, []).append(u)
+    for t, u, esperado in objetivos:
+        por_tienda.setdefault(t, []).append((u, esperado))
 
     print("Barriendo %d productos de %d tiendas...\n" % (len(objetivos), len(por_tienda)))
     resultados = queue.Queue()
     inicio = time.time()
 
-    def trabajar(tienda, urls):
-        for u in urls:
+    def trabajar(tienda, items):
+        for u, esperado in items:
             try:
-                d = leer(tienda, u)
+                d = vigilante._leer(tienda, u, esperado=esperado,
+                                     pool=pool_parseo)
                 resultados.put(("ok", tienda, u, d))
             except Exception as e:                   # noqa: BLE001
                 resultados.put((desenlace(e), tienda, u, None))
@@ -501,6 +516,8 @@ def barrida(con, avisar=True, limite=None, segundos_max=None):
             if det:
                 det.update({"tienda": tienda, "nombre": d["nombre"]})
                 hallazgos.append(det)
+                if avisar:
+                    notificador.enviar(det, detectado_en=time.time())
                 print("  %s %-16s %s → %s (-%.0f%%)" % (
                     "🚨" if det["tipo"] == baseprecios.ERROR else "🏷️",
                     tienda, _plata(det["referencia"]), _plata(precio),
@@ -542,9 +559,11 @@ def barrida(con, avisar=True, limite=None, segundos_max=None):
     print("   errores de precio: %d · ofertas reales: %d · rebajas 35-50%%: %d"
           % (len(errores), len(ofertas), len(rebajas)))
 
-    if hallazgos and avisar:
-        n = alertas.enviar_hallazgos(con, hallazgos)
-        print("   avisos enviados: %d" % n)
+    if notificador_propio:
+        print("   esperando la cola de Telegram...")
+        notificador.cerrar()
+    if pool_propio and pool_parseo:
+        pool_parseo.shutdown(wait=True, cancel_futures=True)
     return hallazgos
 
 

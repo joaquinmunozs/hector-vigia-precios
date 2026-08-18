@@ -46,10 +46,14 @@ Nada bajo 35% llega acá, y entre 35% y 40% solo llega si es de categoría:
 ese corte lo pone `baseprecios.evaluar`, no este archivo.
 """
 import html
+import itertools
 import json
 import os
+import queue
 import re
+import threading
 import time
+import urllib.error
 import urllib.request
 
 import baseprecios
@@ -261,6 +265,20 @@ def armar_texto(det, tienda):
     return "\n".join(lineas)
 
 
+INTERVALO_TELEGRAM = 3.1
+REINTENTOS_TELEGRAM = 4
+
+
+def _retry_after(error):
+    """Extrae el `retry_after` que Telegram devuelve en un HTTP 429."""
+    try:
+        cuerpo = error.read().decode("utf-8", "replace")
+        datos = json.loads(cuerpo)
+        return float((datos.get("parameters") or {}).get("retry_after") or 0)
+    except Exception:                                  # noqa: BLE001
+        return 0.0
+
+
 def _enviar(texto, topico_id=None):
     token = (os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
     chat = (os.environ.get("VIGIA_CHAT_ID") or
@@ -278,15 +296,28 @@ def _enviar(texto, topico_id=None):
         "https://api.telegram.org/bot%s/sendMessage" % token,
         data=json.dumps(cuerpo).encode("utf-8"),
         headers={"Content-Type": "application/json"})
-    try:
-        r = json.loads(urllib.request.urlopen(req, timeout=30).read().decode())
-        if not r.get("ok"):
+    for intento in range(REINTENTOS_TELEGRAM):
+        try:
+            r = json.loads(urllib.request.urlopen(req, timeout=30).read().decode())
+            if r.get("ok"):
+                return True
+            espera = float((r.get("parameters") or {}).get("retry_after") or 0)
             print("telegram rechazó: %s" % str(r)[:200])
-            return False
-        return True
-    except Exception as e:                       # noqa: BLE001 — un aviso que
-        print("telegram falló: %s" % str(e)[:150])   # falla no puede tumbar
-        return False                                  # el barrido entero
+            if not espera or intento + 1 >= REINTENTOS_TELEGRAM:
+                return False
+            time.sleep(espera + 0.25)
+        except urllib.error.HTTPError as e:
+            espera = _retry_after(e) if e.code == 429 else 0
+            if intento + 1 >= REINTENTOS_TELEGRAM:
+                print("telegram falló HTTP %s: %s" % (e.code, str(e)[:120]))
+                return False
+            time.sleep((espera + 0.25) if espera else min(8, 2 ** intento))
+        except Exception as e:                         # noqa: BLE001
+            if intento + 1 >= REINTENTOS_TELEGRAM:
+                print("telegram falló: %s" % str(e)[:150])
+                return False
+            time.sleep(min(8, 2 ** intento))
+    return False
 
 
 def enviar_hallazgos(con, hallazgos):
@@ -314,10 +345,103 @@ def enviar_hallazgos(con, hallazgos):
                 enviados += 1
                 # Telegram tumba al bot si se le mandan más de ~20 mensajes
                 # por minuto al mismo chat.
-                time.sleep(3.5)
+                time.sleep(INTERVALO_TELEGRAM)
         if llego:
             for hermana in hallazgos:
                 if _clave_variante(hermana) == _clave_variante(det):
                     baseprecios.anotar_alerta(con, hermana)
     con.commit()
     return enviados
+
+
+def _prioridad(det):
+    if det.get("tipo") == baseprecios.ERROR:
+        return 0
+    if det.get("tipo") == baseprecios.OFERTA:
+        return 1
+    return 2
+
+
+class NotificadorTelegram:
+    """(codex) Cola durable para avisar sin frenar las lecturas.
+
+    `cerrar()` drena la cola y confirma en SQLite solo los mensajes que
+    Telegram aceptó. Los errores de precio adelantan a ofertas y rebajas. El
+    hilo es daemon únicamente para no colgar un cierre fatal antes del finally;
+    todos los caminos normales llaman explícitamente a `cerrar()`.
+    """
+
+    def __init__(self, coalescer_seg=0.35):
+        self._cola = queue.PriorityQueue()
+        self._secuencia = itertools.count()
+        self._cerrando = threading.Event()
+        self._coalescer_seg = coalescer_seg
+        self._hilo = threading.Thread(target=self._trabajar,
+                                      name="telegram-notificador", daemon=True)
+        self._hilo.start()
+
+    def enviar(self, det, detectado_en=None):
+        if self._cerrando.is_set():
+            raise RuntimeError("el notificador ya está cerrando")
+        copia = dict(det)
+        copia["_detectado_en"] = float(detectado_en or time.time())
+        self._cola.put((_prioridad(copia), next(self._secuencia), copia))
+
+    def _trabajar(self):
+        con = baseprecios.abrir()
+        try:
+            while True:
+                item = self._cola.get()
+                if item is None:
+                    self._cola.task_done()
+                    break
+                lote = [item]
+                fin = time.time() + self._coalescer_seg
+                while time.time() < fin and len(lote) < 100:
+                    try:
+                        siguiente = self._cola.get(timeout=max(0.01, fin - time.time()))
+                    except queue.Empty:
+                        break
+                    if siguiente is None:
+                        self._cola.task_done()
+                        self._cerrando.set()
+                        break
+                    lote.append(siguiente)
+
+                lote.sort(key=lambda x: (x[0], x[1]))
+                hallazgos = [x[2] for x in lote]
+                try:
+                    enviados = enviar_hallazgos(con, hallazgos)
+                    if enviados:
+                        ahora = time.time()
+                        latencias = [ahora - d.get("_detectado_en", ahora)
+                                     for d in hallazgos]
+                        print("   telegram: %d envío(s) · latencia cola %.1f–%.1f s"
+                              % (enviados, min(latencias), max(latencias)))
+                except Exception as ex:                 # noqa: BLE001
+                    # La cola nunca puede quedar bloqueada para siempre por un
+                    # error de SQLite o formato. Se hace visible y el proceso
+                    # puede cerrar conservando el resto de la base.
+                    print("telegram: lote no procesado: %s" % str(ex)[:180])
+                finally:
+                    for _ in lote:
+                        self._cola.task_done()
+        finally:
+            con.close()
+
+    def cerrar(self, timeout=None):
+        """Espera todas las alertas y falla de forma visible si el hilo murió."""
+        if self._cerrando.is_set():
+            return
+        self._cerrando.set()
+        inicio = time.time()
+        while self._cola.unfinished_tasks:
+            if not self._hilo.is_alive():
+                raise RuntimeError("el notificador murió con alertas pendientes")
+            if timeout is not None and time.time() - inicio >= timeout:
+                raise RuntimeError("timeout drenando alertas de Telegram")
+            time.sleep(0.05)
+        self._cola.put(None)
+        self._hilo.join(timeout=timeout)
+        if self._hilo.is_alive():
+            raise RuntimeError("el notificador de Telegram no alcanzó a cerrar")

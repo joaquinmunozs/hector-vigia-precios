@@ -364,6 +364,37 @@ ESTRATEGIAS = (_de_jsonld, _de_nextdata, _de_next_streaming, _de_meta,
 DESACUERDO_MAX = 3.0
 
 
+def _completar_imagen(elegido, hallazgos, html):
+    """Completa la foto sin cambiar la estrategia que ganó el precio."""
+    if not elegido.get("imagen"):
+        for h in hallazgos:
+            if h.get("imagen"):
+                elegido["imagen"] = h["imagen"]
+                break
+    if not elegido.get("imagen"):
+        elegido["imagen"] = _imagen_de_meta(html)
+    return elegido
+
+
+def extraer_rapido(html):
+    """(codex) Primera estrategia válida; los cambios se confirman completos.
+
+    Esta ruta es para precios que coinciden con el ya observado. Un cambio
+    relevante nunca debe alertarse con este resultado sin pasar por `extraer`.
+    """
+    if not html or len(html) < 2000:
+        raise SinPrecio("respuesta muy corta (%d bytes): bloqueo o render por JS"
+                        % len(html or ""))
+    for f in ESTRATEGIAS:
+        try:
+            r = f(html)
+        except Exception:                              # noqa: BLE001
+            continue
+        if r:
+            return _completar_imagen(r, [r], html)
+    raise SinPrecio("ninguna estrategia encontró precio")
+
+
 def extraer(html):
     """Devuelve {nombre, precio, hay_stock, fuente} o lanza SinPrecio.
 
@@ -413,15 +444,6 @@ def extraer(html):
     # No se falla si no hay foto. Un producto sin imagen sigue sirviendo para el
     # historial y para el aviso de Telegram, que es el producto que se cobra;
     # solo queda fuera del carrusel.
-    if not elegido.get("imagen"):
-        # Se busca en OTRO hallazgo antes de caer a las meta tags: si el JSON-LD
-        # de una variante trajo la foto, es más específica que la de og:image
-        # (que a veces es el logo de la tienda).
-        for h in hallazgos:
-            if h.get("imagen"):
-                elegido["imagen"] = h["imagen"]
-                break
-    if not elegido.get("imagen"):
-        elegido["imagen"] = _imagen_de_meta(html)
-
-    return elegido
+    # Se busca en OTRO hallazgo antes de caer a las meta tags: si el JSON-LD
+    # de una variante trajo la foto, es más específica que la de og:image.
+    return _completar_imagen(elegido, hallazgos, html)

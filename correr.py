@@ -25,7 +25,7 @@ ciclos sin que nadie se entere. Ya pasó una vez.
 DURACIÓN
 ------------------------------------------------------------------------------
 GitHub Actions corta cualquier job a las 6 h, sin excepción. El ciclo se
-programa cada 4 h, así que la ventana útil es de ~3.5 h para dejar margen de
+programa cada 6 h, así que la ventana útil es de ~5.25 h para dejar margen de
 cierre: hay que alcanzar a hacer el checkpoint de SQLite y subir el artifact,
 o se pierde el trabajo de toda la corrida.
 """
@@ -43,10 +43,10 @@ import depurar_robots
 import vigia
 import vigilante
 
-# Cuánto dura el vigilante. El job entero tiene 6 h de tope duro y el cron
-# corre cada 4 h; 3.4 h deja margen para que la barrida cierre, se haga el
-# checkpoint y se suba el artifact antes de cualquier corte.
-SEGUNDOS_VIGILANTE = int(3.4 * 3600)
+# Cuánto dura el vigilante. El job entero tiene 350 min de tope y el cron
+# corre cada 6 h; 5.25 h deja margen para cerrar, hacer checkpoint y subir el
+# artifact antes de cualquier corte.
+SEGUNDOS_VIGILANTE = int(5.25 * 3600)
 
 # Tope duro de la barrida (10-ago-2026, ver `barrida.segundos_max` en
 # vigia.py): con esto corriendo a la par del vigilante, el peor caso es
@@ -54,7 +54,7 @@ SEGUNDOS_VIGILANTE = int(3.4 * 3600)
 # barrida esta vez" — que es justo lo que se rompió cuando una tienda
 # empezó a bloquear al runner a mitad de camino. 3 h deja de sobra para
 # los ~3 h que toma un catálogo sano y corta antes de que el vigilante
-# (3.4 h) termine, así el `hilo.join()` de más abajo espera poco.
+# (5.25 h) termine, así el `hilo.join()` de más abajo espera poco.
 SEGUNDOS_BARRIDA = int(3.0 * 3600)
 
 
@@ -239,12 +239,18 @@ def main():
         except Exception as ex:                          # noqa: BLE001
             print("depuración de robots.txt falló (la corrida sigue): %s" % str(ex)[:120])
 
+    notificador = alertas.NotificadorTelegram()
+    # (codex) Un único pool sirve a barrida y vigilante durante toda la tanda.
+    pool_parseo = vigilante.crear_pool_parseo()
+
     def _vigilar():
         # La conexión se abre ACÁ DENTRO, en el hilo que la va a usar.
         try:
             con_v = baseprecios.abrir()
             n = vigilante.correr(con_v, avisar=True,
-                                 segundos_max=SEGUNDOS_VIGILANTE)
+                                 segundos_max=SEGUNDOS_VIGILANTE,
+                                 notificador=notificador,
+                                 pool_parseo=pool_parseo)
             con_v.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             con_v.close()
             print("vigilante: %s hallazgos en la tanda" % n)
@@ -256,7 +262,10 @@ def main():
     print("\nvigilante lanzado en paralelo (%.1f h)\n" % (SEGUNDOS_VIGILANTE / 3600))
 
     if _toca_barrida_completa(ahora):
-        hallazgos = vigia.barrida(con, avisar=True, segundos_max=SEGUNDOS_BARRIDA)
+        hallazgos = vigia.barrida(con, avisar=True,
+                                  segundos_max=SEGUNDOS_BARRIDA,
+                                  notificador=notificador,
+                                  pool_parseo=pool_parseo)
     else:
         print("\nSin barrida completa: hoy ya se hizo (solo corre a las 00:00 UTC).")
         print("El vigilante sigue vigilando la lista caliente.\n")
@@ -287,6 +296,15 @@ def main():
     # lo que corrompió la base en Modal.
     print("\nesperando al vigilante para cerrar limpio...")
     hilo.join()
+    if pool_parseo:
+        pool_parseo.shutdown(wait=True, cancel_futures=True)
+    print("esperando alertas pendientes de Telegram...")
+    notificador.cerrar()
+    # El notificador tiene su propia conexión y puede haber escrito después
+    # del checkpoint anterior. Este es el checkpoint definitivo del artifact.
+    con_final = baseprecios.abrir()
+    con_final.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    con_final.close()
 
     ruta = baseprecios.RUTA
     if os.path.exists(ruta):

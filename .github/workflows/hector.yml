@@ -1,62 +1,50 @@
 name: Héctor — vigía de precios
 
-# El cron de GitHub NO tiene SLA: retrasos de 5 a 30 min son normales, y en
-# horas de carga alta puede irse a 60 o saltarse una corrida. Para un ciclo de
-# 6 h eso es tolerable, así que no vale la pena montar un disparador externo.
-#
-# ── POR QUÉ 6 h Y NO 4 (12-ago-2026) ──────────────────────────────────────
-#
-# Con cron de 4 h y corridas de ~3,5 h no quedaba margen para la cola, y
-# GitHub sólo mantiene UNA corrida pendiente por grupo de concurrencia: la
-# siguiente desplaza a la que esperaba. Resultado medido sobre las últimas 23
-# corridas: **12 canceladas**, 10 exitosas, 1 fallida. Las canceladas
-# vivieron entre 2 y 9 h encoladas antes de morir sin ejecutar nada.
-#
-# Se perdía más de la mitad de las corridas, y eso le pega directo al
-# vigilante, que es el pilar del producto: cada cancelación son 3,4 h sin
-# nadie mirando los precios.
-#
-# 6 h contra corridas de 3,5 h deja 2,5 h de margen real. Menos corridas
-# programadas, pero todas se ejecutan — que es estrictamente mejor que el
-# doble de corridas de las que la mitad no corre.
+# (codex) Cuatro shards independientes: más CPU, estados SQLite sin escrituras
+# cruzadas y una base consolidada al final para redes/análisis.
 on:
   schedule:
     - cron: "0 */6 * * *"
-  workflow_dispatch:        # para poder correrlo a mano desde la web
+  workflow_dispatch:
     inputs:
       solo_descubrir:
-        description: "Solo repoblar el catálogo (sin vigilante ni barrida)"
+        description: "Solo repoblar el catálogo"
         type: boolean
         default: false
       barrida_completa:
-        description: "Forzar la barrida completa aunque no sean las 00:00 UTC"
+        description: "Forzar la barrida completa"
         type: boolean
         default: false
       limpiar_pum:
-        description: "Sacar de la base los precios que eran precio por unidad de medida"
+        description: "Sacar precios por unidad de medida"
         type: boolean
         default: false
 
-# Si el cron se atrasa y dispara una corrida nueva mientras la anterior sigue
-# escribiendo, la nueva ESPERA en la cola.
-#
-# `cancel-in-progress: false` es deliberado y no se debe cambiar: con `true`,
-# GitHub mataría el proceso anterior a mitad de escritura, que es exactamente
-# el tipo de corte abrupto que corrompió la base SQLite en Modal el 7-ago-2026
-# ("database disk image is malformed").
 concurrency:
   group: hector-barrida
   cancel-in-progress: false
 
 jobs:
-  barrer:
+  vigilar:
+    name: Shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    # 6 h es el tope duro de GitHub. `correr.py` se autolimita a ~3.4 h para
-    # el vigilante, así que hay margen de sobra para cerrar y subir el estado.
     timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - shard: "0"
+            tiendas: "falabella.com,easy.cl,casaideas.cl,wei.cl,crandon.cl,kmarket.cl,buscalibre.cl"
+          - shard: "1"
+            tiendas: "hites.com,farmaciasahumada.cl,doite.cl,vans.cl,reuse.cl,jumbo.cl,dinsa.cl,dafiti.cl,converse.cl,mall.cl,dijon.com"
+          - shard: "2"
+            tiendas: "tricot.cl,santaisabel.cl,spdigital.cl,underarmour.cl,hushpuppies.cl,sportline.cl,adidas.cl,tecnored.cl,abc.cl,preunic.cl,pcfactory.cl,reifschneider.cl"
+          - shard: "3"
+            tiendas: "salcobrand.cl,construmart.cl,bata.cl,antartica.cl,puma.cl,paris.cl,rosen.cl,winnerchile.cl,tottus.cl,homy.cl,ripley.cl,cruzverde.cl,decathlon.cl,apple.com/cl"
     permissions:
-      contents: write     # para subir el respaldo semanal como asset de release
-      actions: read       # necesario para listar corridas y elegir la anterior
+      contents: read
+      actions: read
 
     steps:
       - name: Traer el código
@@ -70,173 +58,126 @@ jobs:
       - name: Instalar dependencias
         run: pip install -r requirements.txt
 
-      # BUG real encontrado el 10-ago-2026: `dawidd6/action-download-artifact`
-      # sin `run_id` busca "la corrida más reciente de este workflow" — y esa
-      # corrida más reciente es ESTA MISMA (recién creada, unos segundos
-      # antes). Se encuentra a sí misma, no tiene artifact propio todavía
-      # ("not found: precios-db"), y el catálogo se reinicia desde cero.
-      # Confirmado que pasaba también el 9-ago: no es nuevo, es de siempre.
-      # Esto probablemente explica los pocos avisos de precio: si cada
-      # corrida "descubre" el catálogo otra vez, cada URL es "nueva" y su
-      # precio de referencia se fija en el mismo instante que se lee — nunca
-      # hay una base ANTERIOR real contra la que comparar una caída.
-      #
-      # Arreglo: resolver la corrida anterior a mano (la más reciente que NO
-      # sea `github.run_id`) y pasarle el `run_id` exacto a la acción, para
-      # que no tenga que adivinar.
-      - name: Encontrar la corrida anterior (no esta misma)
-        id: anterior
+      - name: Recuperar la base más reciente del shard
         env:
           GH_TOKEN: ${{ github.token }}
+          SHARD: ${{ matrix.shard }}
         run: |
-          RUN_ID=$(gh api "repos/${{ github.repository }}/actions/workflows/hector.yml/runs?per_page=10" \
-            --jq "[.workflow_runs[] | select(.id != ${{ github.run_id }})][0].id // \"\"")
-          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
-          if [ -n "$RUN_ID" ]; then
-            echo "Corrida anterior: $RUN_ID"
-          else
-            echo "No hay corrida anterior (primera vez que corre este workflow)"
+          set -euo pipefail
+          NAME="precios-db-$SHARD"
+          ARTIFACT_ID=$(gh api "repos/${{ github.repository }}/actions/artifacts?name=$NAME&per_page=20" \
+            --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | .[0].id // empty')
+          if [ -z "$ARTIFACT_ID" ]; then
+            echo "sin base del shard; migrando desde la base monolítica"
+            ARTIFACT_ID=$(gh api "repos/${{ github.repository }}/actions/artifacts?name=precios-db&per_page=20" \
+              --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | .[0].id // empty')
           fi
-
-      # La base de precios NO vive en el repo (git no deduplica binarios que
-      # cambian 6 veces al día). Persiste como artifact, que en repositorios
-      # PÚBLICOS es gratis e ilimitado.
-      - name: Recuperar la base de la corrida anterior
-        if: steps.anterior.outputs.run_id != ''
-        uses: dawidd6/action-download-artifact@v6
-        continue-on-error: true      # la primera corrida no tiene nada que bajar
-        with:
-          name: precios-db
-          run_id: ${{ steps.anterior.outputs.run_id }}
-          if_no_artifact_found: warn
-
-      - name: ¿Qué base tenemos?
-        run: |
-          if [ -f precios.db ]; then
+          if [ -n "$ARTIFACT_ID" ]; then
+            gh api "repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip" > /tmp/precios.zip
+            unzip -o /tmp/precios.zip -d .
             echo "base recuperada: $(du -h precios.db | cut -f1)"
           else
-            echo "sin base previa — esta corrida va a descubrir el catálogo desde cero"
+            echo "sin base previa; se descubrirá el catálogo del shard"
           fi
 
-      # ── LIMPIEZA DE UNA VEZ, A MANO ───────────────────────────────────────
-      #
-      # Va ACÁ dentro y no en un workflow aparte por una razón concreta: la
-      # base vive como artifact de ESTE workflow, y el paso de arriba busca
-      # la corrida anterior de `hector.yml`. Una limpieza que corriera en otro
-      # workflow subiría su artifact a otro sitio y Héctor nunca lo vería —
-      # se habría limpiado una copia que nadie usa.
-      #
-      # Corre antes de `correr.py` para que la barrida de esta misma corrida
-      # ya vuelva a leer bien esas fichas, y el artifact que se sube al final
-      # salga limpio.
-      - name: Limpiar los precios por unidad de medida
-        if: github.event.inputs.limpiar_pum == 'true'
-        run: |
-          if [ -f precios.db ]; then
-            python -u limpiar_pum.py --confirmar
-          else
-            echo "sin base previa: no hay nada que limpiar"
-          fi
+      - name: Aislar la base del shard
+        if: hashFiles('precios.db') != ''
+        env:
+          HECTOR_TIENDAS: ${{ matrix.tiendas }}
+        run: python -u particionar_base.py
 
-      # Los cuatro tópicos van acá. Si faltan ELECTRONICOS y HOGAR, esos dos
-      # tópicos del canal quedan vacíos para siempre y nadie se entera: los
-      # avisos de categoría caen al hilo general del grupo, que parece que
-      # funciona. Hay que crear los cuatro secretos en el repo.
+      - name: Limpiar precios por unidad de medida
+        if: github.event.inputs.limpiar_pum == 'true' && hashFiles('precios.db') != ''
+        run: python -u limpiar_pum.py --confirmar
+
       - name: Correr Héctor
         env:
-          # Solo lo prende el disparo a mano; el cron nunca lo manda, así que
-          # una corrida programada jamás se salta el vigilante por esto.
-          # Reparto entre instancias. Vacío = esta instancia se hace cargo
-          # de las 44 tiendas. Si Alejandro o Max levantan la suya, cada
-          # repo define aquí SU subconjunto y no se pisan (ver tiendas.py).
-          HECTOR_TIENDAS: ${{ vars.HECTOR_TIENDAS }}
-          # Qué fracción del ritmo YA MEDIDO como seguro se le pide a cada
-          # tienda. Se sube de a un escalón mirando la tabla "SALUD POR
-          # TIENDA" que el vigilante imprime al cerrar: si la columna
-          # `rechazo` queda en cero, se puede subir otro escalón. Si una sola
-          # tienda rechaza, se le baja el ritmo A ELLA en RITMO_SEGURO, no
-          # este número. Vacío = 0.35 (el defecto prudente del código).
+          HECTOR_SHARD: ${{ matrix.shard }}
+          HECTOR_TIENDAS: ${{ matrix.tiendas }}
           HECTOR_FACTOR_RITMO: ${{ vars.HECTOR_FACTOR_RITMO }}
+          HECTOR_PROCESOS_PARSE: "3"
           HECTOR_SOLO_DESCUBRIR: ${{ github.event.inputs.solo_descubrir == 'true' && '1' || '0' }}
           HECTOR_BARRIDA_COMPLETA: ${{ github.event.inputs.barrida_completa == 'true' && '1' || '0' }}
-          # paris.cl y easy.cl devuelven 403 a la IP de Azure del runner y 200
-          # al edge de Cloudflare. Estas dos variables son lo único que hace
-          # que esas dos tiendas salgan por el Worker (ver proxy-tiendas/).
-          # La URL no es secreta: lo que protege al Worker es el token.
           HECTOR_PROXY_URL: https://hector-proxy-tiendas.contacto-e95.workers.dev
           HECTOR_PROXY_TOKEN: ${{ secrets.HECTOR_PROXY_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           VIGIA_CHAT_ID: ${{ secrets.VIGIA_CHAT_ID }}
-          # Los tópicos van como `vars`, NO como `secrets` (12-ago-2026).
-          #
-          # Un ID de tópico no es secreto, y guardarlos como secret tenía un
-          # costo alto y no obvio: GitHub censura del log CUALQUIER cadena que
-          # coincida con un secreto. Con `VIGIA_TOPICO_ERRORES=2` y
-          # `=4`, cada dígito 2 y 4 de TODO el log se volvía `***`:
-          #
-          #   estado inicial: ***0.863 vigilados · 175.***1*** con precio
-          #
-          # Toda la telemetría quedaba ilegible, que es probablemente por qué
-          # tardaron en verse el vigilante corriendo al 4% y las corridas
-          # canceladas. Como `vars` los valores se imprimen tal cual.
           VIGIA_TOPICO_ERRORES: ${{ vars.VIGIA_TOPICO_ERRORES }}
           VIGIA_TOPICO_OFERTAS: ${{ vars.VIGIA_TOPICO_OFERTAS }}
           VIGIA_TOPICO_ELECTRONICOS: ${{ vars.VIGIA_TOPICO_ELECTRONICOS }}
           VIGIA_TOPICO_HOGAR: ${{ vars.VIGIA_TOPICO_HOGAR }}
         run: python -u correr.py
 
-      # `if: always()` es clave: si la barrida se cae a la mitad, igual hay que
-      # guardar lo que sí alcanzó a leer. Sin esto, un error al final borraría
-      # el historial de toda la corrida.
-      - name: Guardar la base para la próxima corrida
+      - name: Guardar estado del shard
         if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: precios-db-${{ matrix.shard }}
+          path: precios.db
+          retention-days: 2
+          if-no-files-found: warn
+          overwrite: true
+
+  consolidar:
+    name: Consolidar estado y respaldar
+    needs: vigilar
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - name: Traer el código
+        uses: actions/checkout@v4
+
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Descargar los cuatro shards de esta corrida
+        uses: actions/download-artifact@v4
+        with:
+          pattern: precios-db-*
+          path: shards
+
+      - name: Consolidar bases
+        run: python -u combinar_bases.py --entrada shards --salida precios.db
+
+      - name: Publicar base compatible con redes y análisis
         uses: actions/upload-artifact@v4
         with:
           name: precios-db
           path: precios.db
-          # 90 días, no 3 (16-ago-2026).
-          #
-          # Acá vive TODO el historial de precios de Héctor, y el historial es
-          # lo que decide si un aviso sale o no: sin 7 días de historial,
-          # `evaluar()` solo deja pasar errores de precio y apaga ofertas y
-          # rebajas. Con `retention-days: 3`, tres días seguidos de corridas
-          # fallidas borraban el artifact, la corrida siguiente arrancaba con
-          # catálogo vacío y el reloj del historial volvía a cero — o sea,
-          # otras dos semanas sin poder avisar ofertas.
-          #
-          # Ese no es un riesgo teórico: el historial actual arranca el
-          # 10-ago porque ya pasó. En repos públicos el almacenamiento de
-          # Actions es gratis, así que el margen no cuesta nada. 90 es el
-          # máximo que permite GitHub.
-          retention-days: 90
-          if-no-files-found: warn
+          retention-days: 2
+          if-no-files-found: error
           overwrite: true
 
-      # ── RESPALDO QUE NO EXPIRA NUNCA ──────────────────────────────────────
-      #
-      # Los artifacts caducan siempre, por largo que sea el plazo. Los assets
-      # de un release no caducan. Una vez al día se guarda ahí una copia, para
-      # que perder el historial deje de ser posible: en el peor caso se baja
-      # esta y se pierde un día, no dos semanas de acumulación.
-      #
-      # Solo en la corrida de la madrugada: son ~370 MB y subirla seis veces
-      # al día no aporta nada.
-      - name: Respaldo diario que no expira
-        if: always() && github.event_name == 'schedule'
-        continue-on-error: true          # nunca puede tumbar la corrida
+      - name: Respaldo diario persistente
+        if: github.event_name == 'schedule'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ ! -f precios.db ]; then
-            echo "sin base que respaldar"; exit 0
-          fi
-          if [ "$(date -u +%H)" -ge 04 ]; then
-            echo "no es la corrida de la madrugada: no toca respaldo"; exit 0
-          fi
           gh release view respaldo-base >/dev/null 2>&1 || \
-            gh release create respaldo-base \
-              --title "Respaldo de la base de precios" \
-              --notes "Copia diaria de precios.db. La sube hector.yml sola. Acá vive todo el historial: si se pierde, Héctor tarda dos semanas en volver a poder avisar ofertas." \
-              --latest=false
+            gh release create respaldo-base --title "Respaldo de la base de precios" \
+              --notes "Respaldo diario consolidado de los cuatro shards de Héctor." --latest=false
+          ULTIMO=$(gh api "repos/${{ github.repository }}/releases/tags/respaldo-base" \
+            --jq '[.assets[] | select(.name == "precios.db")][0].updated_at // ""')
+          if [[ "$ULTIMO" == "$(date -u +%F)"* ]]; then
+            echo "el respaldo de hoy ya existe"; exit 0
+          fi
           gh release upload respaldo-base precios.db --clobber
-          echo "respaldo subido: $(du -h precios.db | cut -f1)"
+
+      - name: Conservar solo los dos artifacts más recientes por estado
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for NAME in precios-db-0 precios-db-1 precios-db-2 precios-db-3 precios-db; do
+            gh api "repos/${{ github.repository }}/actions/artifacts?name=$NAME&per_page=100" \
+              --jq '.artifacts | sort_by(.created_at) | reverse | .[2:] | .[].id' | \
+            while read -r ID; do
+              [ -z "$ID" ] || gh api --method DELETE \
+                "repos/${{ github.repository }}/actions/artifacts/$ID"
+            done
+          done

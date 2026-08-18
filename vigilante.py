@@ -58,12 +58,16 @@ referencia se construye con lecturas espaciadas, no con miles del mismo minuto.
 Por eso solo se guarda cuando el precio CAMBIA respecto a la última lectura.
 """
 import argparse
+import collections
+import concurrent.futures
 import math
+import multiprocessing
 import os
 import queue
 import sys
 import threading
 import time
+import zlib
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -247,14 +251,20 @@ REPARTO_ROTATIVA = {"movil": 0.40, "desconocido": 0.45, "quieto": 0.15}
 # Cuántas lecturas hacen falta para creerle a un "nunca cambió". Por debajo de
 # esto la ficha es DESCONOCIDA, no quieta. Mismo criterio que
 # `baseprecios.MIN_OBSERVACIONES` usa para creerle a una mediana.
-MIN_PARA_ENFRIAR = 5
+DIAS_PARA_ENFRIAR = baseprecios.DIAS_MINIMOS_HISTORIAL
 
 
-def _nivel(distintos, lecturas):
-    """En qué nivel de frecuencia cae una ficha."""
+def _nivel(distintos, visto_desde, visto_hasta):
+    """(codex) Nivel por cambios y cobertura temporal, no cantidad de filas.
+
+    `precios` guarda rangos: un precio estable puede tener una única fila cuya
+    fecha final avanza durante meses. Contar filas lo dejaba desconocido para
+    siempre. La duración observada sí representa lo que sabemos del producto.
+    """
     if distintos > 1:
         return "movil"
-    if lecturas < MIN_PARA_ENFRIAR:
+    cobertura = max(0, int(visto_hasta or 0) - int(visto_desde or 0))
+    if cobertura < DIAS_PARA_ENFRIAR * 86400:
         return "desconocido"
     return "quieto"
 
@@ -399,15 +409,78 @@ def _reparto_hilos(tiendas):
 # su hilo. Bajarlo no pierde fichas sanas y devuelve ese tiempo a la vuelta.
 TIEMPO_FICHA = 8
 
+# (codex) El HTML genérico se parsea fuera del GIL coordinador. Tres
+# procesos aprovechan tres CPU y dejan la cuarta para red, SQLite y Telegram.
+def _procesos_parseo():
+    try:
+        return max(0, min(8, int(os.environ.get("HECTOR_PROCESOS_PARSE", "3"))))
+    except ValueError:
+        return 3
 
-def _leer(tienda, url):
+
+def crear_pool_parseo():
+    procesos = _procesos_parseo()
+    if not procesos:
+        return None
+    return concurrent.futures.ProcessPoolExecutor(
+        max_workers=procesos, mp_context=multiprocessing.get_context("spawn"))
+
+
+VALIDAR_CAMBIO_DESDE = 0.10
+MUESTRA_VALIDACION = 100       # una de cada 100 URLs siempre usa extractor completo
+
+
+def _parsear_rapido(html):
+    return extractor.extraer_rapido(html)
+
+
+def _parsear_completo(html):
+    return extractor.extraer(html)
+
+
+_TELEMETRIA = {}
+_TELEMETRIA_LOCK = threading.Lock()
+
+
+def _medir(tienda, nombre, valor):
+    with _TELEMETRIA_LOCK:
+        d = _TELEMETRIA.setdefault(tienda, {})
+        d.setdefault(nombre, collections.deque(maxlen=20_000)).append(float(valor))
+
+
+def _percentil(valores, pct):
+    if not valores:
+        return 0.0
+    ordenados = sorted(valores)
+    pos = min(len(ordenados) - 1, int((len(ordenados) - 1) * pct))
+    return ordenados[pos]
+
+
+def _leer(tienda, url, esperado=None, pool=None):
+    t_red = time.perf_counter()
     especial = adaptadores.para(tienda)
     if especial:
         d = especial(url, lambda u, c: descubrir.bajar(u, tiempo=TIEMPO_FICHA,
                                                        cabeceras=c))
         if d:
+            _medir(tienda, "red_ms", (time.perf_counter() - t_red) * 1000)
             return d
-    return extractor.extraer(descubrir.bajar(url, tiempo=TIEMPO_FICHA))
+    html = descubrir.bajar(url, tiempo=TIEMPO_FICHA)
+    _medir(tienda, "red_ms", (time.perf_counter() - t_red) * 1000)
+
+    t_parse = time.perf_counter()
+    rapido = (pool.submit(_parsear_rapido, html).result()
+              if pool else _parsear_rapido(html))
+    precio = int(rapido["precio"])
+    cambio = (abs(precio - int(esperado)) / max(1, int(esperado))
+              if esperado else 1.0)
+    muestra = (zlib.crc32(url.encode("utf-8")) % MUESTRA_VALIDACION) == 0
+    if cambio >= VALIDAR_CAMBIO_DESDE or muestra:
+        rapido = (pool.submit(_parsear_completo, html).result()
+                  if pool else _parsear_completo(html))
+        rapido["validacion_completa"] = True
+    _medir(tienda, "parse_ms", (time.perf_counter() - t_parse) * 1000)
+    return rapido
 
 
 def cupo(tienda, vuelta=VUELTA_OBJETIVO):
@@ -440,7 +513,12 @@ def cargar_lista(con, vuelta=VUELTA_OBJETIVO):
     filas = con.execute("""
         SELECT tienda, url, nombre, MAX(precio) AS precio,
                COUNT(DISTINCT precio) AS distintos,
-               COUNT(*)               AS lecturas
+               MIN(visto_en)           AS visto_desde,
+               MAX(COALESCE(visto_hasta, visto_en)) AS visto_hasta,
+               (SELECT p2.precio FROM precios p2
+                WHERE p2.url=precios.url AND p2.precio>0
+                ORDER BY COALESCE(p2.visto_hasta,p2.visto_en) DESC, p2.id DESC
+                LIMIT 1) AS precio_actual
         FROM precios
         WHERE precio > 0
         GROUP BY url
@@ -459,11 +537,12 @@ def cargar_lista(con, vuelta=VUELTA_OBJETIVO):
         tope=100_000, tasas_error=tasas_error)
 
     fija_por_tienda, fija_urls = {}, set()
+    actual_por_url = {f["url"]: f["precio_actual"] for f in filas}
     for t, u, n, p in elegidos:
         cupo_fijo = max(1, int(cupo(t, vuelta) * PROPORCION_FIJA))
         lista = fija_por_tienda.setdefault(t, [])
         if len(lista) < cupo_fijo:
-            lista.append((u, n, p))
+            lista.append((u, n, actual_por_url.get(u) or p))
             fija_urls.add(u)
 
     # Candidatas a "ofertas": el resto del catálogo con precio conocido,
@@ -476,9 +555,9 @@ def cargar_lista(con, vuelta=VUELTA_OBJETIVO):
     for f in filas:
         if f["url"] in fija_urls:
             continue
-        niv = _nivel(f["distintos"], f["lecturas"])
+        niv = _nivel(f["distintos"], f["visto_desde"], f["visto_hasta"])
         resto_por_tienda.setdefault(f["tienda"], {}).setdefault(niv, []).append(
-            (f["url"], f["nombre"], f["precio"] or 0))
+            (f["url"], f["nombre"], f["precio_actual"] or f["precio"] or 0))
 
     # Dónde quedó la rotación de ofertas de cada tienda en la corrida anterior.
     # Se lee acá, en el hilo que tiene la conexión: los hilos de tienda no
@@ -585,6 +664,7 @@ RECHAZO = (403, 429, 503, 502, 520, 521, 522, 429)
 # mientras el problema real era otro (la cola sin tope). Una alarma que
 # siempre está encendida no informa: entrena a ignorarla.
 BLOQUEADAS_CONOCIDAS = {"tottus.cl"}
+SONDEO_BLOQUEADA_SEG = 30 * 60
 
 _SALUD = {}
 _SALUD_LOCK = threading.Lock()
@@ -603,6 +683,62 @@ def _marca(tienda, clase):
     with _SALUD_LOCK:
         d = _SALUD.setdefault(tienda, {})
         d[clase] = d.get(clase, 0) + 1
+
+
+class _ControlRitmo:
+    """AIMD prudente: baja rápido ante WAF y recupera lentamente al sanar."""
+
+    def __init__(self, tienda, objetivo):
+        self.tienda = tienda
+        self.objetivo = float(objetivo)
+        self.actual = float(objetivo)
+        self.minimo = max(0.05, self.objetivo * 0.10)
+        self.ventana = collections.deque(maxlen=40)
+        self.sanas_desde_ajuste = 0
+        self.ultimo_ajuste = 0.0
+        self.lock = threading.Lock()
+
+    def ritmo(self):
+        with self.lock:
+            return self.actual
+
+    def resultado(self, sano):
+        """`False` es 403/429/5xx; otros fallos no cambian el ritmo."""
+        if sano is None:
+            return
+        with self.lock:
+            self.ventana.append(bool(sano))
+            if sano:
+                self.sanas_desde_ajuste += 1
+            ahora = time.time()
+            rechazos = len(self.ventana) - sum(self.ventana)
+            if (len(self.ventana) >= 20 and rechazos / len(self.ventana) >= 0.15
+                    and ahora - self.ultimo_ajuste >= 30):
+                anterior = self.actual
+                self.actual = max(self.minimo, self.actual * 0.5)
+                self.ventana.clear()
+                self.sanas_desde_ajuste = 0
+                self.ultimo_ajuste = ahora
+                print("   ritmo adaptativo %s: %.2f → %.2f req/s por rechazos"
+                      % (self.tienda, anterior, self.actual))
+            elif (self.actual < self.objetivo and self.sanas_desde_ajuste >= 200
+                  and ahora - self.ultimo_ajuste >= 60):
+                anterior = self.actual
+                self.actual = min(self.objetivo, self.actual * 1.05 + 0.05)
+                self.sanas_desde_ajuste = 0
+                self.ultimo_ajuste = ahora
+                print("   ritmo adaptativo %s: %.2f → %.2f req/s por salud"
+                      % (self.tienda, anterior, self.actual))
+
+
+def _marcar_fallo_http(tienda, ex):
+    codigo = getattr(ex, "code", None) or getattr(ex, "status_code", None)
+    if codigo in (401, 403):
+        _marca(tienda, "http_403")
+    elif codigo == 429:
+        _marca(tienda, "http_429")
+    elif codigo and int(codigo) >= 500:
+        _marca(tienda, "http_5xx")
 
 
 # ── LA COLA TIENE TOPE, Y POR QUÉ (16-ago-2026) ────────────────────────────
@@ -669,6 +805,7 @@ def _entregar(salida, tienda, url, d, parar=None):
         if parar is not None and parar.is_set():
             return False
         try:
+            d["_listo_en"] = time.perf_counter()
             salida.put((tienda, url, d), timeout=0.25)
             return True
         except queue.Full:
@@ -695,7 +832,7 @@ def _resumen_salud():
     return sorted(filas, key=lambda f: f[5])
 
 
-def _vigilar_tienda(tienda, plan, salida, parar, progreso):
+def _vigilar_tienda(tienda, plan, salida, parar, progreso, pool=None):
     """Recorre en bucle los productos de UNA tienda, a su ritmo seguro.
 
     Cada vuelta: TODA la lista fija (errores, siempre) + una ventana de la
@@ -722,7 +859,7 @@ def _vigilar_tienda(tienda, plan, salida, parar, progreso):
     # Los hilos ya vienen repartidos contra el presupuesto del runner, no es
     # lo que esta tienda pediría por su cuenta (ver `_reparto_hilos`).
     n = plan.get("hilos") or _hilos_para(tienda)
-    intervalo = n / max(0.01, _ritmo(tienda))
+    control = _ControlRitmo(tienda, _ritmo(tienda))
     # Retoma donde quedó la corrida ANTERIOR, no en cero. Con vueltas de
     # ofertas que duran más que una corrida de 3,4 h, arrancar siempre en 0
     # significaba releer eternamente la cabeza de la lista y no llegar nunca
@@ -730,14 +867,15 @@ def _vigilar_tienda(tienda, plan, salida, parar, progreso):
     # `vigia.py` ya tenía resuelto con su marcador.
     desdes = dict(plan.get("desdes") or {})
 
-    def _tanda(urls):
-        for url in urls:
+    def _tanda(items):
+        for url, esperado in items:
             if parar.is_set():
                 return
             t0 = time.time()
             try:
-                d = _leer(tienda, url)
+                d = _leer(tienda, url, esperado=esperado, pool=pool)
                 _marca(tienda, "ok")
+                control.resultado(True)
                 # Puede FRENAR acá si el consumidor está atrasado, y está bien:
                 # es la contrapresión que evita bajar 390.000 fichas por corrida
                 # para tirarlas después (ver COLA_MAXIMA). El `t0` de abajo ya
@@ -755,12 +893,39 @@ def _vigilar_tienda(tienda, plan, salida, parar, progreso):
                 # incomodando, hay que bajarle el ritmo) de los demás errores
                 # (timeout, ficha rota), porque significan cosas distintas y
                 # se corrigen distinto.
-                _marca(tienda, _clase_de_fallo(ex))
+                clase = _clase_de_fallo(ex)
+                _marca(tienda, clase)
+                if clase == "rechazo":
+                    _marcar_fallo_http(tienda, ex)
+                    control.resultado(False)
+                else:
+                    control.resultado(None)
             # Ritmo constante: se descuenta lo que ya tomó la petición, así el
             # ritmo real es el pedido y no "el pedido más lo que demoró".
+            intervalo = n / max(0.01, control.ritmo())
             resto = intervalo - (time.time() - t0)
             if resto > 0:
-                time.sleep(resto)
+                parar.wait(resto)
+
+    # Una tienda con bloqueo conocido no puede consumir una petición cada tres
+    # segundos durante horas. Se conserva un único pulso de salud, rotativo,
+    # para detectar automáticamente si el bloqueo desaparece.
+    if tienda in BLOQUEADAS_CONOCIDAS:
+        todos = fija + [x for lista in rotativas.values() for x in lista]
+        if not todos:
+            return
+        indice = desdes.get("sondeo", 0) % len(todos)
+        while not parar.is_set():
+            url, _nombre, esperado = todos[indice]
+            _tanda([(url, esperado)])
+            indice = (indice + 1) % len(todos)
+            p = progreso.setdefault(tienda, {})
+            p["desdes"] = {"sondeo": indice}
+            p["vueltas"] = p.get("vueltas", 0) + 1
+            p["por_vuelta"] = 1
+            p["seg_vuelta"] = SONDEO_BLOQUEADA_SEG
+            parar.wait(SONDEO_BLOQUEADA_SEG)
+        return
 
     while not parar.is_set():
         t_vuelta = time.time()
@@ -774,7 +939,7 @@ def _vigilar_tienda(tienda, plan, salida, parar, progreso):
             tajada, desdes[niv] = _ventana_rotativa(
                 lista, desdes.get(niv, 0), cupos.get(niv, 0))
             ventana += tajada
-        objetivos = [u for u, _n, _p in fija + ventana]
+        objetivos = [(u, p) for u, _nombre, p in fija + ventana]
         if not objetivos:
             return
         obreros = [threading.Thread(target=_tanda, args=(objetivos[i::n],),
@@ -795,12 +960,17 @@ def _vigilar_tienda(tienda, plan, salida, parar, progreso):
         time.sleep(PAUSA_ENTRE_VUELTAS)
 
 
-def correr(con, avisar=True, ciclos=None, segundos_max=None):
+def correr(con, avisar=True, ciclos=None, segundos_max=None, notificador=None,
+           pool_parseo=None):
     plan = cargar_lista(con)
     if not plan:
         print("Lista caliente vacía. Corre primero una barrida normal para\n"
               "que haya precios conocidos:  python vigia.py --limite 2000")
         return 0
+
+    notificador_propio = avisar and notificador is None
+    if notificador_propio:
+        notificador = alertas.NotificadorTelegram()
 
     def _tam(p, niv):
         return len(p["rotativas"].get(niv, ()))
@@ -850,8 +1020,12 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
     salida = queue.Queue(maxsize=COLA_MAXIMA)
     parar = threading.Event()
     progreso = {}
+    procesos = _procesos_parseo()
+    pool_propio = pool_parseo is None and procesos > 0
+    pool = crear_pool_parseo() if pool_propio else pool_parseo
+    print("   → parseo: %d proceso(s) separado(s) del coordinador" % procesos)
     hilos = [threading.Thread(target=_vigilar_tienda,
-                              args=(t, p, salida, parar, progreso), daemon=True)
+                              args=(t, p, salida, parar, progreso, pool), daemon=True)
              for t, p in plan.items()]
     for h in hilos:
         h.start()
@@ -877,6 +1051,9 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
                 continue
 
             leidos += 1
+            if d.get("_listo_en"):
+                _medir(tienda, "cola_ms",
+                       (time.perf_counter() - d["_listo_en"]) * 1000)
             precio = d["precio"]
 
             # Solo se evalúa y se guarda si el precio CAMBIÓ. A esta frecuencia,
@@ -939,25 +1116,7 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
                     tienda, _plata(det["referencia"]), _plata(precio),
                     det["caida"] * 100, det["tipo"]))
                 if avisar:
-                    # En un hilo aparte: `enviar_hallazgos` duerme 3,5 s entre
-                    # mensajes para no pasarse del límite de Telegram, y hacerlo
-                    # dentro del bucle congelaría la vigilancia justo cuando más
-                    # importa — con un hallazgo recién detectado en la mano.
-                    #
-                    # OJO: `con` es del hilo de ESTE bucle — sqlite3 prohíbe
-                    # usar una conexión desde un hilo distinto al que la creó
-                    # (falla en silencio dentro de un hilo daemon, sin que
-                    # nadie se entere: exactamente el bug que ya pasó una vez
-                    # con el vigilante completo, ver el docstring de
-                    # correr.py). Por eso el hilo nuevo abre SU PROPIA
-                    # conexión — barata, se cierra sola al terminar.
-                    def _avisar(det=det):
-                        con_hilo = baseprecios.abrir()
-                        try:
-                            alertas.enviar_hallazgos(con_hilo, [det])
-                        finally:
-                            con_hilo.close()
-                    threading.Thread(target=_avisar, daemon=True).start()
+                    notificador.enviar(det, detectado_en=time.time())
 
             if ciclos and leidos >= ciclos * total:
                 break
@@ -971,6 +1130,10 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
         print("\n  (cortado a mano)")
     finally:
         parar.set()
+        for h in hilos:
+            h.join(timeout=TIEMPO_FICHA + 5)
+        if pool_propio and pool:
+            pool.shutdown(wait=True, cancel_futures=True)
         con.commit()   # por si quedó algo a medias al cortar
         # Dónde quedó la rotación de cada tienda, para que la corrida
         # siguiente RETOME ahí en vez de volver a la cabeza de la lista.
@@ -1037,6 +1200,16 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
                 aviso = "  <-- SE TIRARON LECTURAS" + aviso
             print("   %-20s %9d %9d %9d %10d %7.1f%%%s"
                   % (t, ok, rech, tout, desc, pct, aviso))
+        with _SALUD_LOCK:
+            codigos = []
+            for t, d in _SALUD.items():
+                if any(d.get(k, 0) for k in
+                       ("http_403", "http_429", "http_5xx")):
+                    codigos.append("%s(403=%d,429=%d,5xx=%d)" % (
+                        t, d.get("http_403", 0), d.get("http_429", 0),
+                        d.get("http_5xx", 0)))
+            if codigos:
+                print("   códigos HTTP: %s" % " · ".join(codigos))
         # Los rechazos de una tienda que YA sabemos bloqueada no cuentan para
         # decidir el ritmo: son constantes, conocidos, y si se suman al total
         # tapan el número que sí importa — el de las tiendas que recién
@@ -1058,6 +1231,30 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None):
         completas = sum(1 for p in progreso.values() if p.get("vueltas"))
         print("   vueltas completas: %d tienda(s) · rotación guardada para la "
               "próxima corrida" % completas)
+        lentas = sorted(
+            ((t, p.get("seg_vuelta", 0), p.get("por_vuelta", 0))
+             for t, p in progreso.items() if p.get("seg_vuelta")),
+            key=lambda x: -x[1])[:5]
+        if lentas:
+            print("   ciclos reales más lentos: %s" % " · ".join(
+                "%s %.1f min/%d" % (t, seg / 60, n) for t, seg, n in lentas))
+    with _TELEMETRIA_LOCK:
+        for metrica in ("red_ms", "parse_ms", "cola_ms"):
+            valores = [v for d in _TELEMETRIA.values() for v in d.get(metrica, ())]
+            if valores:
+                print("   %-8s p50 %.1f ms · p95 %.1f ms · n=%d"
+                      % (metrica, _percentil(valores, 0.50),
+                         _percentil(valores, 0.95), len(valores)))
+        lentas_red = sorted(
+            ((t, _percentil(d.get("red_ms", ()), 0.95))
+             for t, d in _TELEMETRIA.items() if d.get("red_ms")),
+            key=lambda x: -x[1])[:5]
+        if lentas_red:
+            print("   red p95 por tienda: %s" % " · ".join(
+                "%s %.0fms" % x for x in lentas_red))
+    if notificador_propio:
+        print("   esperando la cola de Telegram...")
+        notificador.cerrar()
     return hallazgos
 
 
