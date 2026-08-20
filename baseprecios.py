@@ -71,6 +71,14 @@ UMBRAL_OFERTA = 0.40       # 40%-70% = oferta real, para cualquier producto
 # creatina que en un notebook; $900 no importan en ninguno de los dos.
 AHORRO_MINIMO = 8_000
 UMBRAL_CATEGORIA = 0.35    # 35%-50%: SOLO electrónicos u hogar, ver arriba
+
+# Vuelos tiene su propio piso y NO usa el 35% de las otras categorías.
+# Es un pedido explícito ("ofertas de 40% para arriba al tópico de vuelos") y
+# además tiene sentido solo: en pasajes, un 35% es una promoción de martes
+# cualquiera, mientras que en un notebook es un hallazgo. Si se dejara en 35%
+# el tópico se llenaría de ruido, que es la forma más rápida de que alguien lo
+# silencie.
+UMBRAL_VUELOS = 0.40
 # Historial mínimo para no depender de la línea base. Subió de 3 a 5 el
 # 11-ago-2026: con una barrida completa al día, 3 lecturas son 3 días y la
 # mediana todavía se mueve con cualquier promoción de fin de semana. Con 5 ya
@@ -517,8 +525,8 @@ def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None):
 
     caida = 1 - (precio_actual / referencia)
 
-    # El piso depende de si el producto alimenta un tópico de categoría: 35%
-    # para electrónica y hogar, 50% para todo lo demás.
+    # El piso depende de a qué tópico alimenta: 35% para electrónica y
+    # hogar, 40% para vuelos (ver UMBRAL_VUELOS) y 40% para todo lo demás.
     # El piso de precio decide si un producto BARATO merece avisarse con solo
     # 35% de caída — no a qué tópico pertenece. Se separaban las dos cosas mal:
     # una cortina de $9.000 con 60% de descuento perdía su categoría por el
@@ -527,7 +535,12 @@ def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None):
     # (es cuánto tiene que caer para molestar a alguien).
     categoria = categorias.clasificar(nombre, tienda)
     categoria_con_piso = categorias.clasificar(nombre, tienda, precio_actual)
-    piso = UMBRAL_CATEGORIA if categoria_con_piso else UMBRAL_OFERTA
+    if categoria_con_piso == categorias.VUELOS:
+        piso = UMBRAL_VUELOS
+    elif categoria_con_piso:
+        piso = UMBRAL_CATEGORIA
+    else:
+        piso = UMBRAL_OFERTA
     if caida < piso:
         return None
 

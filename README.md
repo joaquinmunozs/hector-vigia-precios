@@ -42,6 +42,7 @@ malformed"*).
 ```
 correr.py        punto de entrada de GitHub Actions (lo que antes hacía modal_app.py)
 tiendas.py       las 44 tiendas, con su nivel de dificultad y rubro
+aerolineas.py    las 23 aerolineas con rutas desde Chile (vuelos)
 descubrir.py     saca URLs de producto de los sitemaps, respetando robots.txt
 extractor.py     lee el precio del HTML (JSON-LD, microdata, Next.js streaming…)
 adaptadores.py   los casos especiales por tienda
@@ -51,6 +52,8 @@ vigilante.py     el ciclo rápido sobre la lista caliente
 vigia.py         la barrida del catálogo completo
 alertas.py       arma y manda los avisos a Telegram
 depurar_robots.py saca del catálogo lo que una tienda pasó a prohibir
+medir_limites.py cuantas req/s aguanta cada tienda (modo prudente)
+medir_vuelos.py  lo mismo para las aerolineas, con escalera mas suave
 probar_*.py      pruebas manuales por tienda; se corren a mano, no en CI
 cobro/           aparte: el Worker de pagos de Rat.IA (ver cobro/README.md)
 ```
@@ -97,7 +100,7 @@ que se perderían por no instalar una librería.
 
 ### Variables de entorno
 
-Las mismas seis en local (`.env`) y en la nube (Secrets del repo):
+Las mismas en local (`.env`) y en la nube (Secrets del repo):
 
 | Variable | Para qué |
 |---|---|
@@ -107,6 +110,8 @@ Las mismas seis en local (`.env`) y en la nube (Secrets del repo):
 | `VIGIA_TOPICO_OFERTAS` | Tópico "ofertas reales" |
 | `VIGIA_TOPICO_ELECTRONICOS` | Tópico por categoría |
 | `VIGIA_TOPICO_HOGAR` | Tópico por categoría |
+| `VIGIA_TOPICO_VUELOS` | Tópico "✈️ Ofertas Vuelos" (id 351) |
+| `HECTOR_PROXY_MAX_CORRIDA` | Tope de peticiones al proxy por corrida (por defecto 15.000) |
 
 Si faltan los `VIGIA_TOPICO_*`, esos avisos caen al hilo general del grupo y
 todo *parece* funcionar: no hay error, solo tópicos vacíos para siempre.
@@ -136,6 +141,34 @@ Tres cosas del workflow que conviene no tocar sin entender:
 
 El cron de GitHub no tiene SLA: atrasos de 5 a 30 min son normales y en horas
 de carga alta puede saltarse una corrida. Para un ciclo de 4 h es tolerable.
+
+---
+
+## Vuelos (20-ago-2026)
+
+Héctor también vigila pasajes. Van al tópico **"✈️ Ofertas Vuelos"** y
+avisan **desde el 40% de caída**, no desde el 35% como electrónica y hogar
+(`UMBRAL_VUELOS` en `baseprecios.py`): en pasajes un 35% es una promoción de
+martes cualquiera, y el tópico se llenaría de ruido.
+
+Un vuelo se reconoce **por dominio**, no por el nombre — al revés que todo lo
+demás en `categorias.py`. Ahí sí corresponde: la razón para no usar la tienda
+era que Falabella vende de todo, y latam.com vende una sola cosa.
+
+Los vuelos **se saltan el piso de precio de $20.000**. Es a propósito y es lo
+más importante de esta parte: el hallazgo más valioso del rubro es el error de
+precio absurdo — el Santiago-Madrid a $4.000 que alguien cargó mal — y ese
+pasaje cuesta menos que el piso. Con el piso puesto no se avisaría nunca.
+
+**Lo que cubre y lo que no.** Se vigila la *página de ofertas* de cada
+aerolínea, que es una URL fija con precios adentro, o sea el mismo problema
+que Héctor ya sabe resolver. NO cubre una tarifa barata en una fecha suelta
+que la aerolínea no publicó como oferta: para eso haría falta una API de
+búsqueda (Amadeus, Kiwi, Skyscanner), que es otra arquitectura y se paga.
+
+El ritmo al que se le puede pegar a cada una está medido, no supuesto:
+`python medir_vuelos.py`. El resultado del 20-ago está en
+`docs/medicion-aerolineas-2026-08-20.txt`.
 
 ---
 

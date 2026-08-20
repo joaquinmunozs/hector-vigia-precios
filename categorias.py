@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""A qué tópico de categoría pertenece un producto: Electrónicos u Hogar.
+"""A qué tópico de categoría pertenece un hallazgo: Electrónicos, Hogar o Vuelos.
 
 PARA QUÉ EXISTE
 ------------------------------------------------------------------------------
@@ -55,6 +55,7 @@ import re
 
 ELECTRONICOS = "electronicos"
 HOGAR = "hogar"
+VUELOS = "vuelos"
 
 # Bajo esto no se clasifica en ningún tópico de categoría, por mucho que
 # calce. Los tópicos de categoría bajan el piso al 35% de descuento, así que
@@ -164,6 +165,51 @@ RUBRO_A_CATEGORIA = {
     "hogar": HOGAR,
 }
 
+# ── Vuelos ────────────────────────────────────────────────────────────────
+#
+# Un vuelo NO se clasifica por el nombre, como todo lo demás de este archivo,
+# sino por el DOMINIO: si la página es de una aerolínea, es un vuelo y punto.
+# Acá sí sirve, y no contradice la nota de arriba: la razón para no usar la
+# tienda era que Falabella o Paris venden de todo. latam.com vende una sola
+# cosa.
+#
+# POR QUÉ SE EVALÚA ANTES QUE EL PISO DE PRECIO (importa de verdad)
+# ---------------------------------------------------------------------------
+# `PRECIO_MINIMO` son $20.000, pensado para que un 40% sobre una carcasa de
+# tres lucas no llene el canal. Aplicado a vuelos haría lo contrario de lo que
+# queremos: el hallazgo más valioso que existe en este rubro es justamente el
+# error de precio absurdo — el Santiago-Madrid a $4.000 que alguien cargó mal
+# y que la aerolínea alcanza a honrar. Ese pasaje cuesta MENOS que el piso, y
+# con el piso puesto no se avisaría nunca.
+#
+# Por eso los vuelos entran antes: se saltan el piso de precio a propósito.
+_dominios_aereos = None
+
+
+def _es_aerolinea(tienda):
+    """¿Ese dominio es de una aerolínea de las que vigilamos?"""
+    global _dominios_aereos
+    if _dominios_aereos is None:
+        try:
+            import urllib.parse
+            import aerolineas
+            _dominios_aereos = set()
+            for a in aerolineas.AEROLINEAS:
+                host = (urllib.parse.urlsplit(a["url"]).hostname or "").lower()
+                if host:
+                    _dominios_aereos.add(host)
+                    _dominios_aereos.add(host[4:] if host.startswith("www.") else host)
+        except Exception:                                     # noqa: BLE001
+            # Si `aerolineas.py` no está, todo lo demás sigue funcionando
+            # igual que antes. Los vuelos simplemente no se clasifican.
+            _dominios_aereos = set()
+    d = (tienda or "").lower()
+    if not d:
+        return False
+    return d in _dominios_aereos or any(
+        d.endswith("." + x) or x.endswith("." + d) for x in _dominios_aereos)
+
+
 _rubros = None
 
 
@@ -198,6 +244,12 @@ def clasificar(nombre, tienda=None, precio=None):
       4. El rubro de la tienda, solo si el nombre no dijo nada, y solo para
          tiendas de una sola categoría.
     """
+    # Los vuelos van primero y se saltan el piso de precio -- ver la nota
+    # larga en `_es_aerolinea`. Un pasaje a $4.000 es el mejor hallazgo
+    # posible, no ruido.
+    if _es_aerolinea(tienda):
+        return VUELOS
+
     if precio is not None and precio < PRECIO_MINIMO:
         return None
 

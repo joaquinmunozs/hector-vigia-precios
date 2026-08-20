@@ -46,9 +46,46 @@ POR_PROXY = {"paris.cl", "www.paris.cl", "easy.cl", "www.easy.cl"}
 PROXY_URL = os.environ.get("HECTOR_PROXY_URL", "").strip()
 PROXY_TOKEN = os.environ.get("HECTOR_PROXY_TOKEN", "").strip()
 
+# ── Presupuesto de peticiones al proxy, por corrida ────────────────────────
+#
+# POR QUÉ EXISTE (20-ago-2026)
+# La cuenta gratis de Cloudflare da 100.000 peticiones al día para TODOS los
+# Workers juntos. Medido con la API de analytics de Cloudflare ese día:
+#
+#     hector-proxy-tiendas   138.775 req   <- 99,8% de la cuenta
+#     planeta-webhook-ml         185 req
+#     steve-disparador            20 req
+#     veci-leads-api              12 req
+#     ratia-cobro                  3 req
+#
+# O sea Héctor se comía la cuota entero y dejaba a los demás con error 1027
+# (429). Consecuencias reales ese día: el webhook de MercadoLibre caído (las
+# ventas no se registraban) y el ERP de Planeta Shop sirviendo el index.html
+# en vez de ejecutar sus endpoints.
+#
+# El número sale de 985 fichas de easy.cl relevadas ~141 veces al día: no es
+# que sean muchas fichas, es que el vigilante las repasa cada ~10 minutos.
+#
+# Con 4 corridas al día (el cron es "0 */6 * * *"), 15.000 por corrida son
+# 60.000 al día y dejan 40.000 libres para el ERP, el webhook y los cobros de
+# Rat.IA — que mueven plata y no pueden quedarse sin cuota por un scraper.
+#
+# Al agotarse NO se rompe nada: se deja de enrutar por el proxy y la petición
+# sale directa, exactamente como se comportaba Héctor antes de que el proxy
+# existiera (en GitHub Actions eso da 403 y la ficha se salta; en el PC de
+# Joaquín funciona igual de bien porque desde Chile easy.cl responde 200).
+#
+# Esto es un PARCHE, no la solución. La solución de verdad es el plan Workers
+# de US$5 al mes (10 millones de peticiones incluidas), que cubre las 4,2
+# millones mensuales que gasta Héctor sin recortar nada.
+PRESUPUESTO_PROXY = int(os.environ.get("HECTOR_PROXY_MAX_CORRIDA", "15000"))
+_gastadas_en_proxy = 0
+_aviso_presupuesto_dado = False
+
 
 def _por_proxy(url):
     """La URL a pedir y las cabeceras extra, si esta tienda va por el proxy."""
+    global _gastadas_en_proxy, _aviso_presupuesto_dado
     if not PROXY_URL or not PROXY_TOKEN:
         return url, {}
     try:
@@ -57,8 +94,21 @@ def _por_proxy(url):
         return url, {}
     if host.lower() not in POR_PROXY:
         return url, {}
+    if _gastadas_en_proxy >= PRESUPUESTO_PROXY:
+        if not _aviso_presupuesto_dado:
+            _aviso_presupuesto_dado = True
+            print("[proxy] presupuesto agotado (%d peticiones). El resto sale "
+                  "directo para no dejar sin cuota al ERP, al webhook de ML ni "
+                  "a los cobros de Rat.IA." % PRESUPUESTO_PROXY, flush=True)
+        return url, {}
+    _gastadas_en_proxy += 1
     return (PROXY_URL.rstrip("/") + "/?u=" + urllib.parse.quote(url, safe=""),
             {"x-hector-token": PROXY_TOKEN})
+
+
+def gasto_de_proxy():
+    """Cuántas peticiones se enrutaron por el proxy en esta corrida."""
+    return _gastadas_en_proxy
 
 
 CABECERAS = {

@@ -147,6 +147,11 @@ UMBRAL_DUPLICAR = 0.60
 TOPICO_DE_CATEGORIA = {
     categorias.ELECTRONICOS: "VIGIA_TOPICO_ELECTRONICOS",
     categorias.HOGAR: "VIGIA_TOPICO_HOGAR",
+    # Vuelos entra igual que las otras dos categorías, y por eso hereda gratis
+    # el piso del 40% (`UMBRAL_OFERTA`) y el techo del 70%, que es lo que se
+    # pidió: ofertas de 40% para arriba al tópico de vuelos, y sobre 70% al de
+    # errores de precio como cualquier otro hallazgo.
+    categorias.VUELOS: "VIGIA_TOPICO_VUELOS",
 }
 
 

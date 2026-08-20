@@ -106,6 +106,7 @@ jobs:
           VIGIA_TOPICO_OFERTAS: ${{ vars.VIGIA_TOPICO_OFERTAS }}
           VIGIA_TOPICO_ELECTRONICOS: ${{ vars.VIGIA_TOPICO_ELECTRONICOS }}
           VIGIA_TOPICO_HOGAR: ${{ vars.VIGIA_TOPICO_HOGAR }}
+          VIGIA_TOPICO_VUELOS: ${{ vars.VIGIA_TOPICO_VUELOS }}
         run: python -u correr.py
 
       - name: Guardar estado del shard

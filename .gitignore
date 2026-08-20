@@ -56,3 +56,10 @@ proxy-tiendas/.dev.vars
 # joaquinmunozs/ratia.
 CONTEXTO.md
 HALLAZGOS.md
+
+# Sesiones de Telethon. UN ARCHIVO .session ES LA CONTRASEÑA DE LA CUENTA
+# DE TELEGRAM: quien lo tenga puede leer y escribir como esa persona, sin
+# clave ni segundo factor. En el repo privado `ratia` se coló commiteado
+# (no tenía .gitignore). Acá no puede pasar: este repo es PÚBLICO.
+*.session
+*.session-journal
