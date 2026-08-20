@@ -3,3 +3,7 @@
 # por no instalar una librería. PyPI publica ruedas precompiladas para Linux,
 # así que en el runner instala sin compilar nada.
 curl_cffi>=0.7
+
+# telethon: cliente de USUARIO (no bot) para reenviar_ofertas.py -- lee canales
+# ajenos a los que la cuenta esta unida, cosa que un bot no puede hacer.
+telethon>=1.36
