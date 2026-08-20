@@ -685,6 +685,24 @@ def _marca(tienda, clase):
         d[clase] = d.get(clase, 0) + 1
 
 
+# Cuántas peticiones sanas seguidas hacen falta para subir un escalón. Antes
+# eran 200 -- cinco veces el tamaño de la ventana que hace falta para BAJAR
+# (20 de 40, 15%). Verificado en la corrida 32371236694 (20-ago-2026):
+# falabella.com bajó a su piso (36,75 → 3,68 req/s) y quedó ahí ATRAPADA 3+
+# horas seguidas, con 92,5% de éxito global (69.908 ok, 3.704 rechazo) --
+# la tienda no estaba bloqueada, solo tenía ráfagas cortas que alcanzaban el
+# 15% en la ventana de 40 antes de que el contador de 200 llegara a la mitad.
+# Bajar podía repetirse cada 30 s; subir necesitaba un tramo limpio 5 veces
+# más largo Y esperar 60 s -- la asimetría, no el freno en sí, es lo que
+# atrapaba a la tienda. Cada tienda tiene su propio `_ControlRitmo` (esto
+# YA estaba aislado por tienda: en la misma corrida doite.cl terminó en
+# 97,7% sin que falabella la arrastrara), pero cuando la tienda atrapada
+# tiene un presupuesto grande (falabella son 105 de los ~625 req/s del
+# techo medido), la SUMA de todas las tiendas se ve golpeada igual, y desde
+# afuera parece un frenazo "global" aunque el mecanismo sea local.
+UMBRAL_RECUPERACION = 60
+
+
 class _ControlRitmo:
     """AIMD prudente: baja rápido ante WAF y recupera lentamente al sanar."""
 
@@ -721,8 +739,17 @@ class _ControlRitmo:
                 self.ultimo_ajuste = ahora
                 print("   ritmo adaptativo %s: %.2f → %.2f req/s por rechazos"
                       % (self.tienda, anterior, self.actual))
-            elif (self.actual < self.objetivo and self.sanas_desde_ajuste >= 200
-                  and ahora - self.ultimo_ajuste >= 60):
+            # Cooldown de 30s -- igual al de bajar, no 60s -- para que subir
+            # pueda intentarlo con la misma frecuencia con la que se puede
+            # volver a bajar. Con el umbral viejo de 200 y este mismo cooldown
+            # la tienda en el piso (≈10% del objetivo) tardaba ~54s solo en
+            # ACUMULAR las 200 sanas, así que el cooldown de 60s casi nunca
+            # era el límite real; con 60 sanas eso baja a ~16s, y el cooldown
+            # de 30s pasa a marcar el ritmo de la recuperación, tal como ya
+            # lo hace el de bajar.
+            elif (self.actual < self.objetivo
+                  and self.sanas_desde_ajuste >= UMBRAL_RECUPERACION
+                  and ahora - self.ultimo_ajuste >= 30):
                 anterior = self.actual
                 self.actual = min(self.objetivo, self.actual * 1.05 + 0.05)
                 self.sanas_desde_ajuste = 0

@@ -41,11 +41,43 @@ def probar_ritmo_adaptativo():
         control.resultado(False)
     reducido = control.ritmo()
     assert reducido == 5.0
-    control.ultimo_ajuste -= 61
+    control.ultimo_ajuste -= 31
     for _ in range(200):
         control.resultado(True)
     assert reducido < control.ritmo() <= 10.0
     assert vigilante.SONDEO_BLOQUEADA_SEG >= 15 * 60
+
+
+def probar_ritmo_no_se_atasca_en_el_piso():
+    """(20-ago-2026) La corrida 32371236694 mostró a falabella.com atrapada
+    3+ horas en su piso (10% del objetivo) con 92,5% de éxito: bajar
+    necesitaba 20 de 40 (15%) cada 30s, subir necesitaba 200 sanas seguidas
+    cada 60s -- una asimetría de 5x en cantidad y 2x en tiempo. Esta prueba
+    fija el umbral y el cooldown de recuperación para que no vuelvan a
+    desacoplarse de los de bajar."""
+    assert vigilante.UMBRAL_RECUPERACION <= 3 * 40   # no 5x la ventana de bajar (20 de 40)
+
+    control = vigilante._ControlRitmo("prueba.cl", 10.0)
+    for _ in range(20):
+        control.resultado(False)
+    bajado = control.ritmo()
+    assert bajado == 5.0
+
+    # Con el umbral viejo (200) sanas y este mismo número de peticiones, esto
+    # NO alcanzaba para subir ni un escalón.
+    control.ultimo_ajuste -= 31
+    for _ in range(vigilante.UMBRAL_RECUPERACION):
+        control.resultado(True)
+    subido = control.ritmo()
+    assert subido > bajado
+
+    # El cooldown de subir tiene que ser el mismo que el de bajar (30s), no
+    # el doble: si no, subir sigue siendo más lento que bajar aunque el
+    # umbral de conteo ya esté arreglado.
+    control.ultimo_ajuste -= 31
+    for _ in range(vigilante.UMBRAL_RECUPERACION):
+        control.resultado(True)
+    assert control.ritmo() > subido
 
 
 def probar_shards(carpeta):
@@ -155,6 +187,7 @@ def probar_vigilante_con_pool(carpeta):
 def main():
     probar_clasificacion()
     probar_ritmo_adaptativo()
+    probar_ritmo_no_se_atasca_en_el_piso()
     probar_parseo_multiproceso()
     with tempfile.TemporaryDirectory(prefix="hector-mejoras-") as carpeta:
         probar_shards(carpeta)
